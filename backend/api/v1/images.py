@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 from ...analytics import audit
 from ...permissions.access import Principal
 from ...permissions.roles import P
-from ..deps import get_services, require
+from ..deps import ai_budget, get_services, require
 from ..services import Services
 
 router = APIRouter(prefix="/v1", tags=["images"])
@@ -130,6 +130,7 @@ class ImageIn(BaseModel):
 
 @router.post("/images")
 def create_image(body: ImageIn, p: Principal = Depends(require(P.ASK)), svc: Services = Depends(get_services)):
+    ai_budget(svc, p.user_id)                             # F1: per-user limit on paid model calls
     if body.size not in SIZES:
         raise HTTPException(422, f"size must be one of {', '.join(SIZES)}")
     language = svc.search.language.detect(body.prompt) if hasattr(svc.search, "language") else ""

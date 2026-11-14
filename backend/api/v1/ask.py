@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from ...permissions.access import PermissionDenied, resolve_department_scope
 from ...permissions.roles import P, can
 from ...retrieval.ask import NOT_FOUND_TEXT
-from ..deps import Caller, api_caller, get_services, resolve_caller
+from ..deps import Caller, ai_budget, api_caller, get_services, resolve_caller
 from ..services import Services
 from .auth import clean_preferences, learned_hints
 from .gaps import record_gap
@@ -165,6 +165,8 @@ def ask(body: AskRequest, caller: Caller = Depends(api_caller("ask")), svc: Serv
     caller = resolve_caller(caller, body.user_id, svc)
     if not can(caller.principal.role, P.ASK):
         raise HTTPException(403, "your role cannot ask questions")
+    if caller.key is None:
+        ai_budget(svc, caller.principal.user_id)          # F1: per-user limit on paid model calls
     paused = answers_paused(svc)                      # §7 System incident control
     if paused:
         raise HTTPException(503, paused)

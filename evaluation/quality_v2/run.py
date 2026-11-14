@@ -51,11 +51,21 @@ class Client:
     def turn(self, mode: str, text: str, target: str | None, conversation_id: str | None) -> dict:
         t = time.time()
         if mode == "translate":
-            r = self.http.post("/v1/translate", json={"text": text, "target": target or "auto"})
+            for _ in range(6):
+                r = self.http.post("/v1/translate", json={"text": text, "target": target or "auto"})
+                if r.status_code != 429:
+                    break
+                time.sleep(int(r.headers.get("Retry-After", "60")))
+                t = time.time()
             j = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"detail": r.text[:300]}
             return {"status": r.status_code, "seconds": round(time.time() - t, 1), "answer": j.get("translation") or j.get("detail"),
                     "detected": j.get("source"), "target": j.get("target")}
-        r = self.http.post("/v1/ask", json={"question": text, "conversation_id": conversation_id})
+        for _ in range(6):                     # the per-user AI limit (429 + Retry-After) is a wait, not a failure of the case
+            r = self.http.post("/v1/ask", json={"question": text, "conversation_id": conversation_id})
+            if r.status_code != 429:
+                break
+            time.sleep(int(r.headers.get("Retry-After", "60")))
+            t = time.time()
         j = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"detail": r.text[:300]}
         return {"status": r.status_code, "seconds": round(time.time() - t, 1), "answer": j.get("answer") or j.get("detail"),
                 "conversation_id": j.get("conversation_id"), "image": bool(j.get("image")), "image_prompt": j.get("image_prompt"),

@@ -162,6 +162,19 @@ def test_internal_app_with_api_key_is_limited_to_key_departments():
     assert c.post("/v1/ask", headers={"X-API-Key": "qx_live_bad_x"}, json={"question": "q"}).status_code == 401
 
 
+def test_signed_in_users_have_a_per_user_ai_request_limit():
+    """Security audit 2026-11-14 (F1): session users had no limit on the paid model calls (/v1/ask, /v1/translate,
+    /v1/images), so one account or a stolen session could run up cost and tie up the server for everyone."""
+    c, svc, _, _ = make_client()
+    svc.settings = svc.settings.model_copy(update={"user_ai_requests_per_minute": 2})
+    h = bearer(svc)
+    codes = [c.post("/v1/ask", headers=h, json={"question": "q"}).status_code for _ in range(2)]
+    r = c.post("/v1/images", headers=h, json={"prompt": "a red fox"})          # same budget for every paid call
+    assert codes == [200, 200] and r.status_code == 429 and r.headers.get("Retry-After") == "60"
+    assert c.post("/v1/translate", headers=h, json={"text": "hello there"}).status_code == 429
+    assert c.post("/v1/ask", headers=bearer(svc, "emp_9"), json={"question": "q"}).status_code == 200   # per user
+
+
 def test_api_key_permission_and_rate_limit():
     c, svc, _, key = make_client(key_perms=("search",), rate=2)
     h = {"X-API-Key": key}

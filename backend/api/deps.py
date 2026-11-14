@@ -118,3 +118,11 @@ def resolve_caller(caller: Caller, user_id: Optional[str], svc: Services) -> Cal
     if not user or user.get("account_status", "active") != "active":         # §5 FR-AUTH-05: only Active accounts
         raise HTTPException(403, "unknown user_id" if user_id else "the user who created this key no longer exists")
     return Caller(principal=svc.users.principal(user), key=caller.key)
+
+
+def ai_budget(svc: Services, user_id) -> None:
+    """Security audit 2026-11-14 (F1): one shared budget per signed-in user for the paid model calls (ask, translate, images),
+    so one account or a stolen session cannot run up cost or tie up the model for everyone."""
+    limit = getattr(svc.settings, "user_ai_requests_per_minute", 0)
+    if limit and not svc.limiter.allow(f"ai:{user_id}", limit):
+        raise HTTPException(429, "Too many requests. Please wait a minute and try again.", headers={"Retry-After": "60"})

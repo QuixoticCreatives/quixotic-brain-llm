@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from ...analytics import audit
 from ...permissions.access import Principal
 from ...permissions.roles import P
-from ..deps import get_services, require
+from ..deps import ai_budget, get_services, require
 from ..services import Services
 
 router = APIRouter(prefix="/v1", tags=["translate"])
@@ -43,6 +43,7 @@ class TranslateIn(BaseModel):
 
 @router.post("/translate")
 def translate(body: TranslateIn, p: Principal = Depends(require(P.ASK)), svc: Services = Depends(get_services)):
+    ai_budget(svc, p.user_id)                             # F1: per-user limit on paid model calls
     if not can_translate(p, svc):
         raise HTTPException(403, "Translate for client is not enabled for your department.")
     gen = svc.ask.generator

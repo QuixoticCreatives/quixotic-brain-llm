@@ -11,6 +11,8 @@ env.update({"QB_DATABASE_URL": "postgresql://quixotic:quixotic@localhost:5432/qa
             "QB_REDIS_URL": "redis://localhost:6390/0", "QB_VAULT_DIR": str(ROOT / ".qa-vault"), "QB_PUBLIC_URL": "http://localhost:8010",
             "QB_MAIL_BACKEND": "console", "QB_MODEL_QUEUE_TIMEOUT_SECONDS": "10", "QB_RAW_STORAGE_DIR": str(ROOT / ".devstore"),
             "QB_FRONTEND_DIR": str(ROOT / "web" / "dist")})
+if "--effort" in sys.argv:                         # latency experiments: answer-model reasoning effort for this QA run only
+    env["QB_GENERATION_REASONING_EFFORT"] = sys.argv[sys.argv.index("--effort") + 1]
 procs = [subprocess.Popen([sys.executable, "-m", "uvicorn", "backend.main:app", "--port", "8010"], env=env, cwd=ROOT),
          subprocess.Popen([sys.executable, "-m", "workers.worker"], env=env, cwd=ROOT)]
 try:

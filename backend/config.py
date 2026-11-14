@@ -135,6 +135,9 @@ class Settings(BaseSettings):
     # OpenAI reasoning models only (gpt-5 family, o-series): minimal | low | medium | high. Unset = the model's default.
     # Lower is faster (PRD §2: p95 answer < 8 s); higher thinks longer.
     generation_reasoning_effort: Optional[str] = None
+    # Security audit 2026-11-14 (F1): paid model calls (ask, translate, image) per signed-in user per minute. PRD is silent:
+    # implementation necessity, owner-vetoable (docs/PRD_GAPS.md). 0 = no limit. API keys keep their own per-key limit.
+    user_ai_requests_per_minute: int = 20
 
     # ---- knowledge priority (PRD §20) -----------------------------------------------
     # PRD names the four tiers but not which document_type belongs to which. JSON object,
