@@ -37,13 +37,18 @@ versus 22/27 for the earlier default-effort local run (3 repeats); end-to-end me
 40.9 s on this machine (CPU-only local models; production is faster). The two misses passed 1 of 2 repeats (game jargon
 in a "simple English" answer; a console-skin idea without vent clearance). No quality loss measured.
 
+**Deployed to production 2026-11-14 12:12 UTC** (effort `low` + F1 only; Client Brain S1/S2 not deployed). Production
+`query_log` afterwards, 25 answers from one quality-suite pass: **p50 7.6 s, p95 12.5 s, max 15.7 s** (before: p50 19.5 s,
+p95 34.6 s, max 37.0 s, 7 answers over 14 days). Quality suite on production: 25/27 (misses: AI1 138 words vs 130 limit;
+AI4 game jargon in a "simple English" answer). Still above the PRD §2 p95 < 8 s target: options 2–3 are next.
+
 Not recommended now: a bigger or self-hosted model (cost, ops), fine-tuning (PRD §15), dropping the reranker (retrieval is
 already fast).
 
 ## 4. Security findings
 | ID | Priority | Finding | Status |
 |---|---|---|---|
-| F1 | P1 | Signed-in users had no limit on paid model calls (`/v1/ask`, `/v1/translate`, `/v1/images`): one account or a stolen session could run up cost and slow the service for everyone. API keys already had a per-key limit. | Fixed locally: shared per-user budget, default 20 / minute (`QB_USER_AI_REQUESTS_PER_MINUTE`), 429 + Retry-After. Test `test_signed_in_users_have_a_per_user_ai_request_limit`. Not deployed. |
+| F1 | P1 | Signed-in users had no limit on paid model calls (`/v1/ask`, `/v1/translate`, `/v1/images`): one account or a stolen session could run up cost and slow the service for everyone. API keys already had a per-key limit. | Fixed locally: shared per-user budget, default 20 / minute (`QB_USER_AI_REQUESTS_PER_MINUTE`), 429 + Retry-After. Test `test_signed_in_users_have_a_per_user_ai_request_limit`. Deployed 2026-11-14 (limit 20 confirmed in the running api). |
 | F2 | P3 | No `Content-Security-Policy` header. Answers render as plain text (no `dangerouslySetInnerHTML` except a static icon map), so this is defence in depth. | Open |
 | — | ok | HSTS, nosniff, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy present; login throttled per account; parameterised SQL (dynamic column names come from fixed lists); internal services not exposed. | Checked |
 
