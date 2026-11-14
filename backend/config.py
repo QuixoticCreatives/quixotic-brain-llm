@@ -20,6 +20,14 @@ FINAL_RANGE = (5, 8)
 EMBEDDING_DIM = 1024
 
 
+def _not_placeholder(name: str, v: str) -> str:
+    """Security hardening 2026-11-14: the .env.example placeholders are long enough to pass the length check, so they are
+    refused by name."""
+    if "change-me" in v.lower() or "changeme" in v.lower():
+        raise ValueError(f"{name} is a placeholder: generate a random value (python -c \"import secrets; print(secrets.token_urlsafe(48))\")")
+    return v
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="QB_", env_file=".env", extra="ignore")
 
@@ -121,8 +129,6 @@ class Settings(BaseSettings):
     web_search_enabled: bool = False
     # Owner 2026-10-24: "generate images the user asks for". OpenAI image model (measured: gpt-image-1-mini works on this
     # account, gpt-image-1 does not exist for it). Unset = image creation off. Quality: low | medium | high (cost and speed).
-    image_model: Optional[str] = None
-    image_quality: str = "medium"
 
     # ---- pluggable providers (PRD §24, §27, §28) -------------------------------------
     embedding_provider: str = "bge-m3"     # PRD §24.1 initial model to evaluate
@@ -149,14 +155,14 @@ class Settings(BaseSettings):
     def _secret(cls, v: str) -> str:
         if len(v) < 32:
             raise ValueError("session_secret must be at least 32 characters (HS256 JWT signing key)")
-        return v
+        return _not_placeholder("session_secret", v)
 
     @field_validator("field_encryption_key")
     @classmethod
     def _enc(cls, v: str) -> str:
         if len(v) < 32:
             raise ValueError("field_encryption_key must be at least 32 characters")
-        return v
+        return _not_placeholder("field_encryption_key", v)
 
     @field_validator("public_url")
     @classmethod
@@ -164,6 +170,16 @@ class Settings(BaseSettings):
         if not v.startswith(("https://", "http://")):
             raise ValueError("public_url must start with https:// (or http:// for local development)")
         return v.rstrip("/")
+
+    @model_validator(mode="after")
+    def _https_is_production(self):
+        """Security hardening 2026-11-14: an https public_url is a real deployment, so the development shortcuts are refused."""
+        if self.public_url.startswith("https://"):
+            if self.mail_backend == "console":
+                raise ValueError("mail_backend=console writes reset links to the log; use smtp when public_url is https")
+            if not self.admin_mfa_required:
+                raise ValueError("admin_mfa_required must be true when public_url is https (PRD §5 FR-AUTH-06)")
+        return self
 
     @field_validator("mail_backend")
     @classmethod

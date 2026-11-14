@@ -3,6 +3,8 @@ access; rejection and suspension revoke sessions; password reset; admin MFA; dep
 import re
 from uuid import UUID
 
+import time
+
 import pyotp
 
 from backend.api.v1 import auth as auth_api
@@ -147,7 +149,7 @@ def test_admin_mfa_setup_and_verify(stack):
     h = login(client, "sg_admin")
     assert client.get("/v1/admin/users", headers=h).json()["detail"] == "mfa_required"      # nothing works before MFA
     assert client.get("/v1/auth/session", headers=h).json()["mfa"] == "setup"
-    setup = client.get("/v1/auth/mfa/setup", headers=h).json()
+    setup = client.post("/v1/auth/mfa/setup", headers=h).json()
     assert setup["otpauth_uri"].startswith("otpauth://totp/") and setup["qr_svg"].startswith("data:image/svg+xml;base64,")
     assert svc.users.get_by_login("sg_admin")["mfa_secret_enc"] != setup["secret"]           # encrypted at rest (§10)
     assert client.post("/v1/auth/mfa/enable", headers=h, json={"code": "000000"}).status_code == 401
@@ -156,7 +158,10 @@ def test_admin_mfa_setup_and_verify(stack):
     h2 = login(client, "sg_admin")                                                            # a new sign-in asks for the code
     assert client.get("/v1/auth/session", headers=h2).json()["mfa"] == "verify"
     assert client.get("/v1/admin/users", headers=h2).status_code == 401
-    assert client.post("/v1/auth/mfa/verify", headers=h2, json={"code": pyotp.TOTP(setup["secret"]).now()}).status_code == 200
+    same = client.post("/v1/auth/mfa/verify", headers=h2, json={"code": pyotp.TOTP(setup["secret"]).now()})
+    assert same.status_code == 401                                   # 2026-11-14: an accepted code is not accepted twice
+    nxt = pyotp.TOTP(setup["secret"]).at(time.time() + 30)            # the next code (valid_window=1)
+    assert client.post("/v1/auth/mfa/verify", headers=h2, json={"code": nxt}).status_code == 200
     assert client.get("/v1/admin/users", headers=h2).status_code == 200
     # employees never need MFA
     svc.users.create_user("sg_emp", "sg_emp@q.ai", "Emp", hash_password("pw12345"), Role.EMPLOYEE, [d("Sales")])

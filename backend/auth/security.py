@@ -168,9 +168,13 @@ class LoginThrottle:
         self._max, self._w, self._fails = max_failures, window, defaultdict(deque)
 
     def _prune(self, key: str, now: float) -> deque:
-        q = self._fails[key.lower()]
+        q = self._fails.get(key.lower())
+        if q is None:
+            return deque()
         while q and q[0] <= now - self._w:
             q.popleft()
+        if not q:                                   # 2026-11-14: keep memory bounded (no entry for every name ever tried)
+            self._fails.pop(key.lower(), None)
         return q
 
     def blocked(self, identifier: str, now: Optional[float] = None) -> bool:
@@ -178,10 +182,28 @@ class LoginThrottle:
 
     def failure(self, identifier: str, now: Optional[float] = None) -> None:
         t = now if now is not None else time.monotonic()
-        self._prune(identifier, t).append(t)
+        self._prune(identifier, t)
+        self._fails[identifier.lower()].append(t)
 
     def success(self, identifier: str) -> None:
         self._fails.pop(identifier.lower(), None)
 
 
 _DUMMY_HASH = hash_password("not-a-real-password")   # verified when the user does not exist, so timing does not reveal accounts
+
+
+class UsedCodes:
+    """Security hardening 2026-11-14: a two-step code is accepted once. TOTP codes stay valid for about 90 s
+    (valid_window=1), so without this a code seen over someone's shoulder could be replayed. Per process, like the throttles."""
+
+    def __init__(self, ttl: int = 90) -> None:
+        self._ttl, self._seen = ttl, {}
+
+    def first_use(self, user_key: str, code: str, now: Optional[float] = None) -> bool:
+        t = now if now is not None else time.monotonic()
+        self._seen = {k: v for k, v in self._seen.items() if v > t - self._ttl}
+        key = (str(user_key), re.sub(r"\s", "", code or ""))
+        if key in self._seen:
+            return False
+        self._seen[key] = t
+        return True

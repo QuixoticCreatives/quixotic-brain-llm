@@ -44,9 +44,7 @@ function shrinkImage(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
-// "generate / create / draw an image of ..." in normal chat goes to image creation too
-const IMAGE_ASK = /^\s*(please\s+)?(generate|create|make|draw|design|render)\s+(me\s+)?(an?\s+|the\s+|some\s+)?(image|picture|photo|illustration|mockup|drawing|artwork)s?\b|\b(tasveer|tasvir|image|picture)\s+(banao|bana\s*do|bana\s*dein|bana\s*den|generate\s+karo)\b/i;
-const IMAGE_MODE = ['image', 'Create image', 'Describe a picture to create; paste one to build on it'];
+
 
 const TRANSLATE_MODE = ['translate', 'Translate', 'Any language → any language you type, ready to send'];
 // QA 2026-10-24 (QAI-01): same list as the server (backend/api/v1/translate.py TARGET_LANGUAGES)
@@ -97,35 +95,23 @@ export function Ask({ resetKey }: { resetKey: number }) {
     const q = text.trim() || (imgs.length ? 'Please look at the attached image and help me with it.' : '');
     if (!q || busy) return;
     const reuse = !imgs.length && !forceMode && earlier && earlier.left > 0 && mode !== 'translate' && mode !== 'search' ? earlier.images : [];
-    // Owner 2026-10-25: in Create image mode with a picture attached, the AI decides itself whether to draw or to read / reply
-    const decide = !forceMode && mode === 'image' && (imgs.length > 0 || reuse.length > 0);
-    const m2 = forceMode || (decide ? 'general' : mode === 'general' && IMAGE_ASK.test(q) ? 'image' : mode);
+    const m2 = forceMode || mode;                    // owner 2026-11-14: image creation removed
     setBusy(true); setFiles([]);
     if (imgs.length) setEarlier({ images: imgs, left: 3 });
     else if (reuse.length) setEarlier(e => e && { ...e, left: e.left - 1 });
-    const note = m2 === 'image' ? 'Creating your image… usually 20–40 seconds' : imgs.length || reuse.length ? 'Looking at the image…' : undefined;
+    const note = imgs.length || reuse.length ? 'Looking at the image…' : undefined;
     setThread(t => [...t, { role: 'user', text: text.trim(), images: imgs }, { role: 'ai', loading: true, note }]);
     const body = { question: q, department: scope || undefined, conversation_id: convId || undefined };
     let msg: Msg;
     try {
-      if (m2 === 'image') {                           // owner 2026-10-24: create an image (not stored; download it)
-        const refs = imgs.length ? imgs : reuse;
-        const r = await api('/v1/images', { method: 'POST', body: { prompt: q, references: refs } });
-        msg = { role: 'ai', kind: 'image', question: q, image: r.image, prompt: r.prompt, caption: r.caption, files: r.files, references: refs, quality: r.quality };
-        setEarlier({ images: [r.image], left: 3 });
-      } else if (m2 === 'translate') {                     // not saved to chat history: client messages stay private
+      if (m2 === 'translate') {      } else if (m2 === 'translate') {                     // not saved to chat history: client messages stay private
         const r = await api('/v1/translate', { method: 'POST', body: { text: q, target } });
         msg = { role: 'ai', kind: 'translate', question: q, english: r.english, target: r.target, source: r.source };
       } else if (m2 === 'search') {
         const r = await api('/v1/search', { method: 'POST', body });
         msg = { role: 'ai', kind: 'search', question: q, results: r.results }; saved(r);
       } else {
-        const r = await api('/v1/ask', { method: 'POST', body: { ...body, mode: 'general', web_search: web, images: imgs.length ? imgs : reuse, images_earlier: !imgs.length && reuse.length > 0, prefer_image: decide } });
-        if (r.image) {                                // owner 2026-10-25: the AI recognised an image request in any wording
-          setThread(t => [...t.slice(0, -1), { role: 'ai', kind: 'image', question: q, image: r.image, prompt: r.image_prompt, caption: r.answer, files: r.image_files, references: imgs.length ? imgs : reuse }]);
-          setEarlier({ images: [r.image], left: 3 });
-          setBusy(false); saved(r); return;
-        }
+        const r = await api('/v1/ask', { method: 'POST', body: { ...body, mode: 'general', web_search: web, images: imgs.length ? imgs : reuse, images_earlier: !imgs.length && reuse.length > 0 } });
         msg = { role: 'ai', kind: 'ask', question: q, query_id: r.query_id, answer: r.answer, confidence: r.confidence, sources: r.sources || [], web_sources: r.web_sources || [], found: !r.actions, gap_id: r.gap_id }; saved(r);
       }
     } catch (e) { msg = { role: 'ai', error: (e as Error).message, question: q }; }
@@ -135,19 +121,6 @@ export function Ask({ resetKey }: { resetKey: number }) {
     if (!r.conversation_id) return;
     if (!convId) { setConvId(r.conversation_id); replaceRoute('chat/' + r.conversation_id); }
     app.reloadChats();
-  };
-  const imageAgain = async (m: Extract<Msg, { kind: 'image' }>, final: boolean) => {
-    if (busy) return;
-    setBusy(true);
-    setThread(t => [...t, { role: 'ai', loading: true, note: final ? 'Making the final-quality version… up to a minute' : 'Creating another version… usually 20–40 seconds' }]);
-    let msg: Msg;
-    try {
-      const refs = m.references || [];
-      const r = await api('/v1/images', { method: 'POST', body: { prompt: m.question, references: refs, final } });
-      msg = { role: 'ai', kind: 'image', question: m.question, image: r.image, prompt: r.prompt, caption: r.caption, files: r.files, references: refs, quality: r.quality };
-      setEarlier({ images: [r.image], left: 3 });
-    } catch (e) { msg = { role: 'ai', error: (e as Error).message, question: m.question }; }
-    setThread(t => [...t.slice(0, -1), msg]); setBusy(false);
   };
   const update = (i: number, patch: Partial<Msg>) => setThread(t => t.map((m, k) => (k === i ? ({ ...m, ...patch } as Msg) : m)));
   const retry = (i: number, question: string) => { setThread(t => t.slice(0, i - 1)); setTimeout(() => submit(question)); };
@@ -204,7 +177,7 @@ export function Ask({ resetKey }: { resetKey: number }) {
     <div className="hero-glow relative flex-1 flex flex-col">
       <div className="relative z-[1] flex-1 flex flex-col max-w-[780px] w-full mx-auto px-5">
         <div className="flex-1 flex flex-col gap-[26px] pt-14 pb-6">
-          {thread.map((m, i) => <Message key={i} m={m} i={i} last={i === thread.length - 1} update={update} retry={retry} submit={submit} again={imageAgain} />)}
+          {thread.map((m, i) => <Message key={i} m={m} i={i} last={i === thread.length - 1} update={update} retry={retry} submit={submit} />)}
           <div ref={threadEnd} />
         </div>
         <div className="sticky bottom-0 pt-2 pb-5 bg-gradient-to-b from-transparent to-canvas to-30%">
@@ -243,7 +216,6 @@ function Composer({ compact, busy, mode, setMode, target, setTarget, web, setWeb
     document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close);
   }, [pop]);
   const send = () => { if ((!text.trim() && !files.length) || busy) return; onSend(text); setText(''); if (ta.current) { ta.current.value = ''; ta.current.style.height = 'auto'; } };
-  const fileInput = useRef<HTMLInputElement>(null);
   const slang = app.me.preferences?.discord_slang === true;
   const [savingSlang, setSavingSlang] = useState(false);
   const toggleSlang = async () => {
@@ -296,14 +268,12 @@ function Composer({ compact, busy, mode, setMode, target, setTarget, web, setWeb
         </div>
       )}
       <textarea id="q" ref={ta} rows={compact ? 1 : 2} aria-label="Your question"
-        placeholder={mode === 'translate' ? (target === AUTO_TARGET ? 'Write English or Roman Urdu text to translate…' : `Write the text to translate into ${target}…`) : mode === 'image' ? 'Describe the image to create (paste a picture to build on it)…' : 'Ask anything about work, or paste an image (Ctrl+V)…'}
+        placeholder={mode === 'translate' ? (target === AUTO_TARGET ? 'Write English or Roman Urdu text to translate…' : `Write the text to translate into ${target}…`) : 'Ask anything about work, or paste an image (Ctrl+V)…'}
         className={`w-full border-0 outline-none resize-none bg-transparent px-2 py-1.5 text-base leading-normal placeholder:text-muted max-h-[200px] ${compact ? 'min-h-11' : 'min-h-14'}`}
         onPaste={onPaste}
         onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
       <div ref={box} className="relative flex items-center gap-2.5 mt-1.5">
         <button className="circle-btn" aria-label="Answer mode" title="Answer mode" aria-expanded={pop === 'mode'} onClick={() => setPop(pop === 'mode' ? null : 'mode')}><Icon name="plus" size={20} /></button>
-        <button className="circle-btn" aria-label="Attach image" title="Attach image (or paste with Ctrl+V, or drop it here)" onClick={() => fileInput.current?.click()}><Icon name="image" size={19} /></button>
-        <input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={e => { addImages(Array.from(e.target.files || [])); e.target.value = ''; }} />
         {/* Owner 2026-10-24: Discord Slang Mode as a quick toggle (saved per user, same setting as in Personalization) */}
         <button className={`pill max-sm:px-3 ${slang ? 'on' : ''}`} aria-pressed={slang} disabled={savingSlang}
           title={slang ? 'Slang Mode is ON: short, casual Discord-style messages. Click to turn off.' : 'Turn on Slang Mode: short, casual Discord-style messages'}
@@ -318,8 +288,6 @@ function Composer({ compact, busy, mode, setMode, target, setTarget, web, setWeb
           <button className="ml-1 -mr-1 px-1 rounded-full hover:bg-white/60" aria-label="Cancel Search only" title="Cancel" onClick={() => setMode('general')}>✕</button></span>}
         {web && <span className="chip orange gap-1"><Icon name="globe" size={14} /> Web Search
           <button className="ml-1 -mr-1 px-1 rounded-full hover:bg-white/60" aria-label="Turn off Web Search" title="Turn off" onClick={() => { setWeb(false); toast('Web Search off: office answers only'); }}>✕</button></span>}
-        {mode === 'image' && <span className="chip orange gap-1">Create image
-          <button className="ml-1 -mr-1 px-1 rounded-full hover:bg-white/60" aria-label="Cancel image creation" title="Cancel" onClick={() => setMode('general')}>✕</button></span>}
         {mode === 'translate' && <span className="chip orange gap-1">Translate to
           {/* owner 2026-10-24: any language - type it, or pick a suggestion */}
           <input className="bg-transparent font-semibold outline-none w-40 border-b border-current/30" aria-label="Translate to" list="qb-languages"
@@ -334,7 +302,7 @@ function Composer({ compact, busy, mode, setMode, target, setTarget, web, setWeb
         {pop === 'mode' && (
           <div className="pop">
             <div className="ph">Mode</div>
-            {(app.me.can_translate ? [...MODES, TRANSLATE_MODE, IMAGE_MODE] : [...MODES, IMAGE_MODE]).map(m => (
+            {(app.me.can_translate ? [...MODES, TRANSLATE_MODE] : MODES).map(m => (
               <button key={m[0]} className={mode === m[0] ? 'sel' : ''} onClick={() => { setMode(m[0]); setPop(null); }}>
                 <span>{m[1]}<small>{m[2]}</small></span>{mode === m[0] && <Icon name="tick" size={16} className="ml-auto text-orange" />}
               </button>
@@ -462,7 +430,7 @@ function zoom(src: string) {
   ));
 }
 
-function Message({ m, i, last = false, update, retry, submit, again }: { m: Msg; i: number; last?: boolean; update: (i: number, p: any) => void; retry: (i: number, q: string) => void; submit: (q: string, mode?: string) => void; again: (m: Extract<Msg, { kind: 'image' }>, final: boolean) => void }) {
+function Message({ m, i, last = false, update, retry, submit }: { m: Msg; i: number; last?: boolean; update: (i: number, p: any) => void; retry: (i: number, q: string) => void; submit: (q: string, mode?: string) => void }) {
   const app = useApp();
   if (m.role === 'user') return (
     <div className="msg-u">
@@ -479,29 +447,6 @@ function Message({ m, i, last = false, update, retry, submit, again }: { m: Msg;
   if ('error' in m) return wrap(<>
     <Banner kind="err">{m.error}</Banner>
     <button className="btn sm mt-2.5" onClick={() => retry(i, m.question)}><Icon name="refresh" size={15} /> Retry</button>
-  </>);
-  if (m.kind === 'image') return wrap(<>
-    {m.caption && <p className="mb-2 whitespace-pre-wrap">{m.caption}</p>}
-    <button className="block w-full max-w-[520px] checker rounded-2xl" aria-label="Open full size" title="Open full size" onClick={() => zoom(m.image)}>
-      <img src={m.image} alt={m.question} className="w-full rounded-2xl border border-line shadow-sm" />
-    </button>
-    {m.files && m.files.length > 0 && <div className="flex flex-wrap items-end gap-3 mt-2.5" aria-label="Platform sizes">
-      {m.files.map(f => (
-        <a key={f.name} href={f.image} download={`quixotic-${f.name}.png`} className="flex flex-col items-center gap-1 text-[12px] text-muted hover:text-ink" title={`Download ${f.name.replace('x', '×')} (preview on dark and light)`}>
-          <span className="flex gap-1"><span className="p-1 rounded bg-[#18181b]"><img src={f.image} alt="" /></span><span className="p-1 rounded bg-white border border-line"><img src={f.image} alt="" /></span></span>
-          <span className="flex items-center gap-1">{f.name.replace('x', '×')} <Icon name="down" size={13} /></span>
-        </a>))}
-    </div>}
-    <div className="flex flex-wrap items-center gap-2 mt-2.5">
-      <a className="btn sm" href={m.image} download="quixotic-image.png"><Icon name="down" size={15} /> Download</a>
-      <button className="btn sm" onClick={() => again(m, false)}><Icon name="refresh" size={15} /> Another version</button>
-      {m.quality !== 'high' && <button className="btn sm" title="Cleaner lines and text; takes longer" onClick={() => again(m, true)}>Final quality</button>}
-      <small className="text-muted">Images are not saved. Download the ones you want to keep.</small>
-    </div>
-    {m.prompt && <details className="more mt-2"><summary>Prompt used</summary>
-      <div className="flex items-start gap-2 mt-1.5"><p className="flex-1 text-[13.5px] text-ink-2 whitespace-pre-wrap">{m.prompt}</p>
-        <button className="btn ghost sm !px-2" aria-label="Copy prompt" title="Copy prompt" onClick={() => copyWithToast(m.prompt!)}><Icon name="copy" size={15} /></button></div>
-    </details>}
   </>);
   if (m.kind === 'translate') return wrap(<>
     <div className="label mb-2">{m.source ? `${m.source} → ${m.target}` : `${m.target || 'English'} translation`}</div>

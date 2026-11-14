@@ -126,14 +126,12 @@
     {"id": "IM1", "issue": 7, "mode": "chat", "history": [
         {"mode": "chat", "q": "Client wants a custom skin for his PS5. He plays Call of Duty and likes a dark military style. Give me a concept."}],
      "input": "now generate an image of this concept",
-     "expected_language": "english", "expected_structure": "an image",
-     "checks": {"image": true, "image_prompt_contains_any": ["PS5", "PlayStation 5", "console"]},
-     "must": ["The image prompt describes the PS5 console skin concept from the chat (dark military style), not a generic image"]},
+     "expected_language": "english", "expected_structure": "a short not-available reply",
+     "must": ["Says image creation is not available (owner 2026-11-14: removed) and offers a written description or brief instead; no image, no invented capability"]},
     {"id": "IM2", "issue": 7, "mode": "chat", "history": [],
      "input": "generate a mascot logo of a red samurai fox with the text KITSU",
-     "expected_language": "english", "expected_structure": "an image",
-     "checks": {"image": true, "image_prompt_contains_any": ["KITSU"]},
-     "must": ["Image prompt keeps: mascot logo, red samurai fox, the exact text KITSU"]},
+     "expected_language": "english", "expected_structure": "a short not-available reply",
+     "must": ["Says image creation is not available (owner 2026-11-14: removed) and offers a written description or brief instead; no image, no invented capability"]},
 
     {"id": "RT1", "issue": 0, "mode": "chat", "history": [],
      "input": "what is our refund policy?",

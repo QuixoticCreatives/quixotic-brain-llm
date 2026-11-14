@@ -1,6 +1,6 @@
 """Owner 2026-10-26 "CRITICAL QUALITY FIXES V2": permanent tests for the routing, translation direction and format checks.
 The live behaviour (real model answers) is covered by evaluation/quality_v2 (cases.json + run.py)."""
-from backend.generation.prompt import GENERAL_SYSTEM_PROMPT, IMAGE_DIRECTOR_PROMPT, TRANSLATE_PROMPT, build_user_prompt
+from backend.generation.prompt import GENERAL_SYSTEM_PROMPT, TRANSLATE_PROMPT, WEB_SYSTEM_PROMPT, build_user_prompt
 from backend.generation.tasks import (AUTO, Task, format_problems, parse_task, run_translation, task_instructions,
                                       translation_problem, translation_target)
 from backend.models import AnswerContext
@@ -154,22 +154,31 @@ def test_idea_rules_follow_the_requested_count_type_and_length():
 def test_console_skins_get_physical_product_rules():
     rules = task_instructions(Task(task="artwork_ideas", artwork_type="PS5 console skin"))
     assert "PHYSICAL product" in rules and "vents" in rules and "model and edition are needed" in rules
-    assert "console_skin" in IMAGE_DIRECTOR_PROMPT
 
 
-# ---------------- issue 7: images keep the approved concept ----------------
-def test_image_of_this_concept_carries_the_concept_to_the_art_director():
+# ---------------- owner 2026-11-14: image creation removed ----------------
+def test_image_requests_get_a_fixed_reply_and_no_model_call():
+    from backend.retrieval.ask import IMAGES_OFF_TEXT
     search = _svc()
     gen = _Router(Task(task="image", uses_previous=True))
-    history = [("PS5 skin concept please", "So I was thinking: matte black panels with olive camo strips ...")]
-    r = AskService(search, gen, search.settings).ask("now generate an image of this concept", DEPT, levels=LV, history=history)
-    assert r.image_request and r.image_context.startswith("So I was thinking") and not gen.calls
+    r = AskService(search, gen, search.settings).ask("now generate an image of this concept", DEPT, levels=LV)
+    assert r.answer == IMAGES_OFF_TEXT and r.task == "image" and not gen.calls
+    assert not hasattr(r, "image_request")
 
 
-def test_director_input_marks_the_approved_concept_as_data():
-    from backend.generation.prompt import build_image_director_input
-    s = build_image_director_input("draw it", False, "camo PS5 skin")
-    assert "<approved_concept>\ncamo PS5 skin\n</approved_concept>" in s and "<approved_concept> (when given)" in IMAGE_DIRECTOR_PROMPT
+def test_a_create_image_line_from_the_model_is_never_passed_on():
+    from backend.retrieval.ask import IMAGES_OFF_TEXT
+    search = _svc()
+    gen = _Router(Task(task="other"), "CREATE_IMAGE: a red fox mascot")
+    r = AskService(search, gen, search.settings).ask("draw a red fox", DEPT, levels=LV)
+    assert r.answer == IMAGES_OFF_TEXT and "CREATE_IMAGE" not in r.answer
+
+
+def test_prompts_no_longer_offer_image_creation():
+    import backend.generation.prompt as prompt
+    assert "CREATE_IMAGE" not in GENERAL_SYSTEM_PROMPT and "CREATE_IMAGE" not in WEB_SYSTEM_PROMPT
+    assert not hasattr(prompt, "IMAGE_DIRECTOR_PROMPT")
+    assert "cannot create" in GENERAL_SYSTEM_PROMPT.lower()
 
 
 # ---------------- system-wide ----------------

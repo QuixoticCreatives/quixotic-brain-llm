@@ -200,6 +200,11 @@ def source_of(c: Candidate) -> dict:
             "updated": c.updated_at.isoformat() if c.updated_at else None}
 
 
+# Owner 2026-11-14: image creation removed from Quixotic AI.
+IMAGES_OFF_TEXT = ("Image creation is not available in Quixotic AI. I can describe the design in words instead: "
+                   "tell me what it is for and I'll write a clear brief for the designer.")
+
+
 @dataclass
 class AskResult:
     answer: str
@@ -210,8 +215,6 @@ class AskResult:
     historical_cases: Optional[dict] = None               # §30 "17 similar cases / 12 successful outcomes"
     actions: list[str] = field(default_factory=list)
     web_sources: list[dict] = field(default_factory=list)  # owner 2026-10-24 Web Search: [{title, url}]
-    image_request: Optional[str] = None                      # owner 2026-10-25: the chat asked for a picture -> create it
-    image_context: str = ""                                    # V2: the concept from the chat that the picture must show
     task: Optional[str] = None                                 # V2 2026-10-26: the routed task (generation/tasks.py)
     query: Optional[NormalizedQuery] = None
     retrieved: list[Candidate] = field(default_factory=list)
@@ -239,7 +242,7 @@ class AskService:
             sales_department_ids: frozenset[UUID] = frozenset(), levels: frozenset[str] = frozenset(),
             history: Sequence[tuple[str, str]] = (), asker: Optional[dict] = None,
             preferences: Optional[dict] = None, recheck=None, web_search: bool = False,
-            images: Sequence[str] = (), images_earlier: bool = False, prefer_image: bool = False) -> AskResult:
+            images: Sequence[str] = (), images_earlier: bool = False) -> AskResult:
         """`history`: earlier (question, answer) pairs of the same chat, oldest first. Used only to understand what a short
         follow-up refers to, never as a source of facts. `recheck(version_ids) -> still allowed ids` re-checks permissions and
         publication right before the answer is returned (PRD §8 "Recheck permissions before providing the final source/answer")."""
@@ -260,9 +263,9 @@ class AskService:
         images = list(images)                                                   # owner 2026-10-24: pasted images (per request)
         earlier = bool(images) and images_earlier                                 # QA 2026-10-25: follow-up about an earlier image
         if web_search:                                                           # owner 2026-10-24: user switched Web Search on
-            return self._web(out, history, asker, preferences, recheck, base, images, earlier, prefer_image)
+            return self._web(out, history, asker, preferences, recheck, base, images, earlier)
         if getattr(self.settings, "general_assistant", False):                   # owner 2026-10-21: ChatGPT-like assistant
-            return self._general(out, cases, history, asker, preferences, recheck, base, images, earlier, prefer_image)
+            return self._general(out, cases, history, asker, preferences, recheck, base, images, earlier)
         if not out.candidates or out.confidence == "low":
             return self._fallback(out, cases, min_sim, history, asker, preferences, base)
 
@@ -292,7 +295,13 @@ class AskService:
                 sources.append(source_of(c))
         return AskResult(answer=answer, found=True, sources=sources, historical_cases=hist, **base)
 
-    def _web(self, out, history, asker, preferences, recheck, base, images=(), earlier=False, prefer_image=False) -> AskResult:
+    @staticmethod
+    def _images_off(out, task=None) -> AskResult:
+        """Owner 2026-11-14: Quixotic AI no longer creates images. A fixed reply; no model call, nothing drawn."""
+        return AskResult(answer=IMAGES_OFF_TEXT, found=True, confidence="general", confidence_score=out.confidence_score,
+                         query=out.query, retrieved=out.candidates, task="image" if task is not None else None)
+
+    def _web(self, out, history, asker, preferences, recheck, base, images=(), earlier=False) -> AskResult:
         """Web Search on: current web results (OpenAI web_search tool) + permitted company knowledge for Quixotic's own facts."""
         if not getattr(self.settings, "web_search_enabled", False):
             raise RuntimeError("Web Search is not enabled on this server.")
@@ -302,18 +311,16 @@ class AskService:
             knowledge = [c for c in knowledge if c.version_id in allowed]
         context = AnswerContext(knowledge=knowledge, history=list(history), asker=asker or {}, preferences=preferences or {},
                                 general_mode=True, web_search=True, user_language=getattr(out.query, "language", "") or "",
-                                images=list(images), images_earlier=earlier, prefer_image=prefer_image)
+                                images=list(images), images_earlier=earlier)
         text, links = self.generator.generate_web_answer(context, out.query.original)
-        if text.lstrip().upper().startswith("CREATE_IMAGE"):        # owner 2026-10-25
-            req = text.split(":", 1)[1].strip() if ":" in text else out.query.original
-            return AskResult(answer=req, found=True, confidence="general", confidence_score=out.confidence_score,
-                             query=out.query, retrieved=out.candidates, image_request=req or out.query.original)
+        if text.lstrip().upper().startswith("CREATE_IMAGE"):        # owner 2026-11-14: image creation removed
+            return self._images_off(out)
         if not text.strip():
             return AskResult(answer=NOT_FOUND_TEXT, found=False, actions=NOT_FOUND_ACTIONS, **base)
         return AskResult(answer=text.strip(), found=True, confidence="web", confidence_score=out.confidence_score,
                          sources=[source_of(c) for c in knowledge][:3], web_sources=links, query=out.query, retrieved=out.candidates)
 
-    def _general(self, out, cases, history, asker, preferences, recheck, base, images=(), earlier=False, prefer_image=False) -> AskResult:
+    def _general(self, out, cases, history, asker, preferences, recheck, base, images=(), earlier=False) -> AskResult:
         """General assistant: always answers. Permitted, published knowledge (filters applied before retrieval, §8/§10) and similar
         past chats are passed as context; weak matches are left out so they cannot mislead. A missing company fact is a gap (§9)."""
         knowledge = order_by_priority(out.candidates, self.settings.priority_tiers) if out.candidates and out.confidence != "low" else []
@@ -329,15 +336,12 @@ class AskService:
                 task = settle_task(task, out.query.original)
         if task is not None and task.task == "translation" and not images:
             return self._translate(out, task, preferences)
-        if task is not None and task.task == "image":
-            concept = history[-1][1] if task.uses_previous and history and history[-1][1] else ""
-            return AskResult(answer=out.query.original, found=True, confidence="general", confidence_score=out.confidence_score,
-                             query=out.query, retrieved=out.candidates, image_request=out.query.original,
-                             image_context=concept[:3000], task="image")
+        if task is not None and task.task == "image":                  # owner 2026-11-14: image creation removed
+            return self._images_off(out, task)
         context = AnswerContext(knowledge=knowledge, sales_cases=cases, history=list(history), asker=asker or {},
                                 preferences=preferences or {}, general_mode=True,
                                 user_language=getattr(out.query, "language", "") or "", images=list(images),
-                                images_earlier=earlier, prefer_image=prefer_image,
+                                images_earlier=earlier,
                                 task_rules=task_instructions(task) if task else "", verbosity=_task_verbosity(task))
         def formatted(text: str) -> str:              # requested format checked in code; one corrected rewrite
             problems = format_problems(task, text) if task else []
@@ -355,10 +359,8 @@ class AskService:
             text = formatted(self.generator.generate_answer(context, out.query.original + STRICT_RETRY_NOTE).strip())
             if _invented_money(text, knowledge, user_text):
                 text = f"{SAFE_MISSING}\n{MISSING_COMPANY_INFO}"
-        if text.lstrip().upper().startswith("CREATE_IMAGE"):        # owner 2026-10-25: image request in any phrasing
-            req = text.split(":", 1)[1].strip() if ":" in text else out.query.original
-            return AskResult(answer=req, found=True, confidence="general", confidence_score=out.confidence_score,
-                             query=out.query, retrieved=out.candidates, image_request=req or out.query.original)
+        if text.lstrip().upper().startswith("CREATE_IMAGE"):        # owner 2026-11-14: image creation removed
+            return self._images_off(out, task)
         if text.startswith(OFF_TOPIC) or text.strip(" .") == OFF_TOPIC:
             return AskResult(answer=OFF_TOPIC_TEXT, found=True, confidence="general", confidence_score=out.confidence_score,
                              query=out.query, retrieved=out.candidates)

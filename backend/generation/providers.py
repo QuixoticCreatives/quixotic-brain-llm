@@ -8,9 +8,8 @@ from __future__ import annotations
 import re
 
 from ..models import AnswerContext
-from .image_post import ASSETS
 from .tasks import CLASSIFY_PROMPT, Task, build_classify_input, parse_task
-from .prompt import (INTERPRET_PROMPT, SYSTEM_PROMPT, system_prompt_for, TRANSLATE_PROMPT, build_interpret_input, build_translate_input, IMAGE_DIRECTOR_PROMPT, build_image_director_input,
+from .prompt import (INTERPRET_PROMPT, SYSTEM_PROMPT, system_prompt_for, TRANSLATE_PROMPT, build_interpret_input, build_translate_input,
                      build_user_prompt)
 
 
@@ -109,38 +108,6 @@ class OpenAIGenerator(_Interprets):
             model=self._model, **extra,
             messages=[{"role": "system", "content": system_prompt_for(context)}, {"role": "user", "content": user}])
         return (r.choices[0].message.content or "").strip()
-
-    def generate_image(self, model: str, prompt: str, quality: str, size: str, references: list[bytes],
-                       background: str = "auto") -> bytes:
-        """Owner 2026-10-24: create an image (PNG bytes). With reference images the model edits / builds on them.
-        Measured 2026-10-25: gpt-image-1-mini supports background="transparent" and 1536x1024."""
-        import base64
-        import io
-        extra = {"background": background} if background in ("transparent", "opaque") else {}
-        if references:
-            files = [("reference.png", io.BytesIO(b), "image/png") for b in references]
-            r = self._client.images.edit(model=model, image=files, prompt=prompt, size=size, quality=quality, n=1, **extra)
-        else:
-            r = self._client.images.generate(model=model, prompt=prompt, size=size, quality=quality, n=1, **extra)
-        return base64.b64decode(r.data[0].b64_json)
-
-    def direct_image(self, request: str, has_references: bool = False, concept: str = "") -> dict:
-        """Owner 2026-10-25 art-director step: expand the request, choose canvas and background. Falls back to the raw request."""
-        import json
-        raw = self._complete(IMAGE_DIRECTOR_PROMPT, build_image_director_input(request, has_references, concept), 1200)
-        try:
-            data = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
-        except (ValueError, json.JSONDecodeError):
-            return {"prompt": request, "size": "1024x1024", "background": "opaque", "asset": "other", "edit": has_references,
-                    "fan_art": False, "text": ""}
-        size = data.get("size") if data.get("size") in ("1024x1024", "1536x1024", "1024x1536") else "1024x1024"
-        background = "transparent" if data.get("background") == "transparent" else "opaque"
-        prompt = str(data.get("prompt") or request).strip()[:3500]
-        asset = data.get("asset") if data.get("asset") in ASSETS else "other"
-        return {"prompt": prompt, "size": size, "background": background, "asset": asset,
-                "edit": bool(data.get("edit")) and has_references, "fan_art": bool(data.get("fan_art")),
-                "text": str(data.get("text") or "")[:80]}
-
 
     def generate_web_answer(self, context: AnswerContext, question: str) -> tuple[str, list[dict]]:
         """Owner 2026-10-24 Web Search: OpenAI Responses API with the built-in web_search tool. Returns (text, [{title, url}])."""

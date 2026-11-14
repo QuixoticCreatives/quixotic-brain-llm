@@ -11,11 +11,11 @@ from typing import Optional
 from uuid import UUID
 
 import segno
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import BackgroundTasks, APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ...analytics import audit
-from ...auth.security import (_DUMMY_HASH, LoginThrottle, SlidingWindowLimiter, decrypt_secret, encrypt_secret, hash_password,
+from ...auth.security import (_DUMMY_HASH, LoginThrottle, UsedCodes, SlidingWindowLimiter, decrypt_secret, encrypt_secret, hash_password,
                               needs_rehash, new_totp_secret, password_problem, totp_uri, verify_password, verify_totp)
 from ...learning.feedback import style_hints
 from ...notifications.mail import reset_email, send_safely, verification_email
@@ -27,6 +27,11 @@ from ..services import Services
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 throttle = LoginThrottle()
+# Security hardening 2026-11-14 (docs/PRD_GAPS.md): failures are also counted per client address, so one address cannot
+# spray passwords over many accounts; and an accepted two-step code cannot be used a second time.
+IP_LOGIN_MAX_FAILURES = 50
+ip_throttle = LoginThrottle(max_failures=IP_LOGIN_MAX_FAILURES)
+used_codes = UsedCodes()
 
 # Messages for states other than Active (FR-AUTH-03/05). Shown only after the right password, so they reveal nothing.
 STATE_MESSAGES = {
@@ -60,12 +65,14 @@ class LoginRequest(BaseModel):
 @router.post("/login")
 def login(body: LoginRequest, request: Request, response: Response, svc: Services = Depends(get_services)):
     ident = body.identifier.strip()
-    if throttle.blocked(ident):
+    ip, ua = _client(request)
+    if throttle.blocked(ident) or ip_throttle.blocked(ip):
         raise HTTPException(429, "Too many failed attempts. Please wait 15 minutes and try again.")
     user = svc.users.get_by_login(ident)
     ok = verify_password(body.password, user["password_hash"] if user else _DUMMY_HASH)   # same work whether or not it exists
     if not user or not ok:
         throttle.failure(ident)
+        ip_throttle.failure(ip)
         audit.record(svc.ops, audit.FAILED_AUTHENTICATION, None, ident)
         raise HTTPException(401, "invalid credentials")
     state = user["account_status"]
@@ -78,7 +85,6 @@ def login(body: LoginRequest, request: Request, response: Response, svc: Service
     throttle.success(ident)
     if needs_rehash(user["password_hash"]):                 # legacy scrypt -> Argon2id (FR-AUTH-06)
         svc.users.set_password_hash(user["id"], hash_password(body.password))
-    ip, ua = _client(request)
     needs_mfa = mfa_required(user, svc)
     token, csrf = svc.sessions.create(user["id"], svc.settings.session_ttl_seconds, mfa_passed=not needs_mfa, ip=ip, user_agent=ua)
     _set_session_cookies(response, svc, token, csrf)
@@ -104,7 +110,7 @@ def _mfa_key(svc: Services) -> str:
     return svc.settings.field_encryption_key
 
 
-@router.get("/mfa/setup")
+@router.post("/mfa/setup")                         # 2026-11-14: was GET; it changes state
 def mfa_setup(info: SessionInfo = Depends(current_session), svc: Services = Depends(get_services)):
     """A new secret to add to an authenticator app. Not available once MFA is on (resetting it is an admin action)."""
     user = info.user
@@ -124,10 +130,10 @@ def _check_code(info: SessionInfo, svc: Services, code: str, secret_enc: Optiona
     if throttle.blocked(key):
         raise HTTPException(429, "Too many wrong codes. Please wait 15 minutes and try again.")
     secret = decrypt_secret(secret_enc or "", _mfa_key(svc))
-    if not secret or not verify_totp(secret, code):
+    if not secret or not verify_totp(secret, code) or not used_codes.first_use(info.user["id"], code):
         throttle.failure(key)
         audit.record(svc.ops, audit.FAILED_AUTHENTICATION, info.user["id"], info.user["employee_id"], reason="mfa")
-        raise HTTPException(401, "That code is not correct. Check the time on your phone and try again.")
+        raise HTTPException(401, "That code is not correct, or it was already used. Wait for the next code in your app and try again.")
     throttle.success(key)
     svc.sessions.mark_mfa_passed(info.session["id"])
 
@@ -139,6 +145,7 @@ def mfa_enable(body: MfaCode, info: SessionInfo = Depends(current_session), svc:
         raise HTTPException(409, "two-step sign-in is already set up")
     _check_code(info, svc, body.code, user.get("mfa_secret_enc"))
     svc.users.set_mfa(user["id"], user["mfa_secret_enc"], enabled=True)
+    svc.sessions.revoke_user(user["id"], except_session=info.session["id"])   # 2026-11-14: other devices sign in again
     audit.record(svc.ops, audit.ADMIN_ACTION, user["id"], user["employee_id"], action="mfa_enabled")
     return {"mfa": "passed"}
 
@@ -176,9 +183,13 @@ def signup_options(svc: Services = Depends(get_services)):
     return {"departments": [{"id": str(d["id"]), "name": d["name"]} for d in svc.users.list_departments(include_archived=False)]}
 
 
-def _send_verification(svc: Services, user_id: UUID, name: str, email: str) -> None:
+def _send_verification(svc: Services, user_id: UUID, name: str, email: str, background: Optional[BackgroundTasks] = None) -> None:
     token = svc.one_time.issue(user_id, "verify_email", svc.settings.one_time_link_ttl_seconds)
-    send_safely(svc.mailer, email, *verification_email(name, f"{svc.settings.public_url}/#/verify?token={token}"))
+    args = (svc.mailer, email, *verification_email(name, f"{svc.settings.public_url}/#/verify?token={token}"))
+    if background is not None:                          # 2026-11-14: after the response (no timing hint about accounts)
+        background.add_task(send_safely, *args)
+    else:
+        send_safely(*args)
 
 
 @router.post("/register", status_code=201)
@@ -232,23 +243,24 @@ class EmailBody(BaseModel):
 
 
 @router.post("/verify-email/resend", status_code=202)
-def resend_verification(body: EmailBody, request: Request, svc: Services = Depends(get_services)):
+def resend_verification(body: EmailBody, request: Request, background: BackgroundTasks, svc: Services = Depends(get_services)):
     """Always 202, so it never reveals whether an account exists (PRD §10 account enumeration)."""
     ip, _ = _client(request)
     user = svc.users.get_by_login(body.identifier.strip())
     if user and not user.get("email_verified_at") and mail_limiter.allow(f"{ip}:{user['id']}", MAILS_PER_HOUR):
-        _send_verification(svc, user["id"], user["full_name"], user["email"])
+        _send_verification(svc, user["id"], user["full_name"], user["email"], background)
     return {"status": "if the account exists and is not verified, a new link was sent"}
 
 
 @router.post("/password-reset", status_code=202)
-def password_reset_request(body: EmailBody, request: Request, svc: Services = Depends(get_services)):
+def password_reset_request(body: EmailBody, request: Request, background: BackgroundTasks, svc: Services = Depends(get_services)):
     """FR-AUTH-06 password reset. Always 202 (no account enumeration). Only Active accounts get a link."""
     ip, _ = _client(request)
     user = svc.users.get_by_login(body.identifier.strip())
     if user and user["account_status"] == "active" and mail_limiter.allow(f"{ip}:{user['id']}", MAILS_PER_HOUR):
         token = svc.one_time.issue(user["id"], "reset_password", svc.settings.one_time_link_ttl_seconds)
-        send_safely(svc.mailer, user["email"], *reset_email(user["full_name"], f"{svc.settings.public_url}/#/reset?token={token}"))
+        # 2026-11-14: sent after the response, so response time does not reveal which accounts exist (PRD §10)
+        background.add_task(send_safely, svc.mailer, user["email"], *reset_email(user["full_name"], f"{svc.settings.public_url}/#/reset?token={token}"))
     return {"status": "if the account exists, a reset link was sent"}
 
 

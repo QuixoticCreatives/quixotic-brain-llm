@@ -1,6 +1,8 @@
 """POST /v1/ask (PRD §37, §38) and POST /v1/search (PRD §39)."""
 from __future__ import annotations
 
+import re
+
 import time
 from typing import Literal, Optional
 from uuid import UUID
@@ -21,6 +23,21 @@ router = APIRouter(prefix="/v1", tags=["ask"])
 
 
 MAX_QUESTION_CHARS = 4000     # implementation necessity: bounds embedding/LLM cost per request (docs/PRD_GAPS.md)
+
+
+
+# Owner 2026-10-24: pasted images are read with the question, never stored. Kept here after image creation was removed (2026-11-14).
+MAX_IMAGE_BYTES = 8 * 1024 * 1024           # implementation limit (docs/PRD_GAPS.md): per pasted image
+_DATA_URL = re.compile(r"^data:image/(png|jpeg|jpg|webp|gif);base64,([A-Za-z0-9+/=]+)$")
+
+
+def check_data_url(url: str) -> str:
+    m = _DATA_URL.match(url or "")
+    if not m:
+        raise ValueError("images must be PNG, JPEG, WEBP or GIF")
+    if len(m.group(2)) * 3 // 4 > MAX_IMAGE_BYTES:
+        raise ValueError("each image must be 8 MB or smaller")
+    return url
 
 
 class _Question(BaseModel):
@@ -44,12 +61,10 @@ class AskRequest(_Question):
     # QA 2026-10-25: follow-ups keep the picture. The browser resends the chat's last image(s) (nothing is stored on the server)
     # and marks them as shared earlier, so "what about the second line?" or "make it blue" still sees the image.
     images_earlier: bool = False
-    prefer_image: bool = False               # owner 2026-10-25: sent from Create image mode with a picture attached
 
     @field_validator("images")
     @classmethod
     def _images_ok(cls, v: list[str]) -> list[str]:
-        from .images import check_data_url
         return [check_data_url(u) for u in v]
 
 
@@ -182,7 +197,7 @@ def ask(body: AskRequest, caller: Caller = Depends(api_caller("ask")), svc: Serv
         res = svc.ask.ask(body.question, scope, include_sales_history=body.mode == "sales_coach",
                           sales_department_ids=scope, levels=levels,
                           history=_history(svc, caller, body.conversation_id), asker=asker, preferences=prefs, recheck=recheck,
-                          web_search=body.web_search, images=body.images, images_earlier=body.images_earlier, prefer_image=body.prefer_image)
+                          web_search=body.web_search, images=body.images, images_earlier=body.images_earlier)
     except RuntimeError as e:                    # e.g. no answer-model API key configured yet
         raise HTTPException(503, str(e))
     gap_id = None
@@ -192,16 +207,6 @@ def ask(body: AskRequest, caller: Caller = Depends(api_caller("ask")), svc: Serv
     out = {"query_id": str(query_id), "answer": res.answer, "confidence": res.confidence}   # PRD §38 shape
     if res.task:
         out["task"] = res.task                                             # V2 2026-10-26: which task the message was routed to
-    if res.image_request:                                                  # owner 2026-10-25: chat asked for a picture
-        from ...analytics import audit as _audit
-        from .images import make_image
-        made = make_image(svc, res.image_request, body.images, language=res.query.language if res.query else "",
-                          concept=res.image_context)
-        _audit.record(svc.ops, _audit.IMAGE_GENERATION, caller.principal.user_id, caller.principal.employee_id,
-                      chars=len(res.image_request), references=len(body.images), via="chat")
-        # QA 2026-10-25: the reply states what was really delivered, never the internal prompt
-        out.update({"image": made["image"], "image_prompt": made["prompt"], "answer": made["caption"], "image_files": made["files"],
-                    "image_size": made["size"]})
     if can(caller.principal.role, P.VIEW_SOURCES):
         out["sources"] = res.sources
     if res.historical_cases is not None:
@@ -213,12 +218,8 @@ def ask(body: AskRequest, caller: Caller = Depends(api_caller("ask")), svc: Serv
     if gap_id:
         out["gap_id"] = str(gap_id)
     stored_q = body.question + (f"\n[{len(body.images)} image(s) attached]" if body.images else "")   # images are not stored
-    if out.get("image"):                     # the picture itself is not stored in chat history (size, privacy)
-        assistant = {k: v for k, v in out.items() if k not in ("image", "image_files")}
-    else:
-        assistant = None
     cid = _remember(svc, caller, body.conversation_id, stored_q, body.mode, requested,
-                    {"kind": "ask", "mode": body.mode, "question": body.question, **(assistant or out)})
+                    {"kind": "ask", "mode": body.mode, "question": body.question, **out})
     if cid is not None:
         out["conversation_id"] = str(cid)
     return out

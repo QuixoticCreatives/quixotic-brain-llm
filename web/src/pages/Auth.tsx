@@ -166,7 +166,7 @@ function ResetPassword({ token, done }: { token: string; done: (message: string)
 export function MfaScreen({ mode, email, done, cancel }: { mode: 'setup' | 'verify'; email: string; done: () => void; cancel: () => void }) {
   const [setup, setSetup] = useState<{ secret: string; qr_svg: string } | null>(null);
   const [code, setCode] = useState(''); const a = useAction();
-  useEffect(() => { if (mode === 'setup') api('/v1/auth/mfa/setup').then(setSetup).catch(e => a.setError(e.message)); }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (mode === 'setup') api('/v1/auth/mfa/setup', { method: 'POST' }).then(setSetup).catch(e => a.setError(e.message)); }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     a.run(() => api(mode === 'setup' ? '/v1/auth/mfa/enable' : '/v1/auth/mfa/verify', { method: 'POST', body: { code } })).then(ok => ok && done());

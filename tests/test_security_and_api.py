@@ -74,6 +74,7 @@ class Users:
     def get_by_email(self, e): return next((u for u in self.rows.values() if u["email"] == e), None)
     def record_login(self, uid): pass
     def set_password_hash(self, uid, h): self.get(uid)["password_hash"] = h
+    def set_mfa(self, uid, enc, enabled): self.get(uid).update(mfa_secret_enc=enc, mfa_enabled_at="2026-11-14" if enabled else None)
     def department_by_name(self, n): return {"sales": {"id": SALES}, "hr": {"id": HR}}.get(n.lower())
     def all_department_ids(self): return frozenset({SALES, HR})
     def list_departments(self, include_archived=True): return [{"id": SALES, "name": "Sales", "status": "active"}, {"id": HR, "name": "HR", "status": "active"}]
@@ -163,15 +164,13 @@ def test_internal_app_with_api_key_is_limited_to_key_departments():
 
 
 def test_signed_in_users_have_a_per_user_ai_request_limit():
-    """Security audit 2026-11-14 (F1): session users had no limit on the paid model calls (/v1/ask, /v1/translate,
-    /v1/images), so one account or a stolen session could run up cost and tie up the server for everyone."""
+    """Security audit 2026-11-14 (F1): session users had no limit on the paid model calls (/v1/ask, /v1/translate),, so one account or a stolen session could run up cost and tie up the server for everyone."""
     c, svc, _, _ = make_client()
     svc.settings = svc.settings.model_copy(update={"user_ai_requests_per_minute": 2})
     h = bearer(svc)
     codes = [c.post("/v1/ask", headers=h, json={"question": "q"}).status_code for _ in range(2)]
-    r = c.post("/v1/images", headers=h, json={"prompt": "a red fox"})          # same budget for every paid call
+    r = c.post("/v1/translate", headers=h, json={"text": "hello there"})       # same budget for every paid call
     assert codes == [200, 200] and r.status_code == 429 and r.headers.get("Retry-After") == "60"
-    assert c.post("/v1/translate", headers=h, json={"text": "hello there"}).status_code == 429
     assert c.post("/v1/ask", headers=bearer(svc, "emp_9"), json={"question": "q"}).status_code == 200   # per user
 
 
@@ -235,3 +234,21 @@ def test_answer_model_failure_is_a_503_without_provider_details():              
     svc.ask.generator = LazyGenerator(lambda: Rejected())
     r = c.post("/v1/ask", headers=bearer(svc), json={"question": "q"})
     assert r.status_code == 503 and "unavailable" in r.json()["detail"] and "sk-" not in r.json()["detail"]
+
+
+def test_image_creation_endpoint_is_removed():
+    """Owner 2026-11-14: image generation removed from the system (cost and misuse surface)."""
+    c, svc, _, _ = make_client()
+    h = bearer(svc)
+    assert c.post("/v1/images", headers=h, json={"prompt": "a red fox"}).status_code == 404
+    r = c.post("/v1/ask", headers=h, json={"question": "q", "prefer_image": True})
+    assert r.status_code == 200 and "image" not in r.json() and "image_files" not in r.json()
+
+
+def test_pasted_images_are_still_validated_after_image_creation_was_removed():
+    """Owner 2026-11-14: reading pasted screenshots stays; only PNG/JPEG/WEBP/GIF data URLs of at most 8 MB are accepted."""
+    c, svc, _, _ = make_client()
+    h = bearer(svc)
+    bad = c.post("/v1/ask", headers=h, json={"question": "q", "images": ["data:text/html;base64,PHNjcmlwdD4="]})
+    ok = c.post("/v1/ask", headers=h, json={"question": "q", "images": ["data:image/png;base64,iVBORw0KGgo="]})
+    assert bad.status_code == 422 and ok.status_code == 200
