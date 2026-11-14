@@ -49,13 +49,13 @@ already fast).
 | ID | Priority | Finding | Status |
 |---|---|---|---|
 | F1 | P1 | Signed-in users had no limit on paid model calls (`/v1/ask`, `/v1/translate`, `/v1/images`): one account or a stolen session could run up cost and slow the service for everyone. API keys already had a per-key limit. | Fixed locally: shared per-user budget, default 20 / minute (`QB_USER_AI_REQUESTS_PER_MINUTE`), 429 + Retry-After. Test `test_signed_in_users_have_a_per_user_ai_request_limit`. Deployed 2026-11-14 (limit 20 confirmed in the running api). |
-| F2 | P3 | No `Content-Security-Policy` header. Answers render as plain text (no `dangerouslySetInnerHTML` except a static icon map), so this is defence in depth. | Fixed locally: CSP on every response (`backend/main.py`); no violations in the browser. Not deployed. |
+| F2 | P3 | No `Content-Security-Policy` header. Answers render as plain text (no `dangerouslySetInnerHTML` except a static icon map), so this is defence in depth. | Fixed and deployed 2026-11-14: CSP on every response (`backend/main.py`), confirmed on the live site. |
 | — | ok | HSTS, nosniff, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy present; login throttled per account; parameterised SQL (dynamic column names come from fixed lists); internal services not exposed. | Checked |
 
 Limit of this check: code review plus read-only production requests. No attack traffic was sent to production. Active
 tests (authorization bypass, injection, upload abuse, prompt injection) run only against the local QA copy (`scripts/qa_up.py`).
 
-## 5. Auth checklist (20 points) and image-creation removal — 2026-11-14, local only (not deployed)
+## 5. Auth checklist (20 points) and image-creation removal — 2026-11-14 (deployed 2026-11-14, release 70505bf, no Client Brain)
 Code review of the 20-point auth checklist (OTP, tokens, reset, admin). Already OK before this change: tokens are hashed and
 never returned; reset links are single-use, 256-bit and expire; login gives the same 401 and does the same hashing work for unknown
 users; the session lives in an HttpOnly, SameSite cookie with CSRF double-submit (no token in localStorage); logout, suspension and
@@ -85,3 +85,5 @@ copy: no image icon, modes Answer / Search only / Translate, "generate an image 
 Evidence: `pytest -m "not integration"` 201 passed, 57 skipped, 2 xfailed; integration (real PostgreSQL) signup, account, postgres,
 client API, client memory, learning, translate: 47 passed; `tsc --noEmit` and `vite build` clean. Model-loading integration suites
 (models, e2e, answers, chats, contributors, knowledge) NOT VERIFIED locally (memory pressure on this machine).
+
+Production check after deploy: health ok; CSP and HSTS headers present; `/v1/images` gone; live bundle has no Attach image / Create image; quality cases IM1 and IM2 on production get the fixed "not available" reply (no image).
