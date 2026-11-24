@@ -141,3 +141,34 @@ def test_admin_report_and_reset_are_admin_only_and_name_no_one(stack):
     assert client.post("/v1/learning/reset", headers=admin).json() == {"reset": True}
     r = client.get("/v1/answer-quality", headers=admin).json()
     assert (r["up"], r["down"]) == (0, 0)                                           # ratings given before the reset no longer count
+
+
+def test_rating_report_leaves_out_answers_built_from_documents_above_the_viewers_level(stack):
+    """Security review 2026-11-24 F2 (PRD §8, §10): a Knowledge Admin must not read restricted answer text or source titles."""
+    svc, client, sales, users = _setup(stack, 1)
+    import json
+    levels = json.loads(svc.settings.sensitivity_levels_json)
+    levels["restricted"] = ["system_admin", "founder_ceo"]                     # as on production
+    object.__setattr__(svc.settings, "sensitivity_levels_json", json.dumps(levels))
+    svc.users.create_user("lr_ka", "lr_ka@q.ai", "Curator", hash_password("pw12345"), Role.KNOWLEDGE_ADMIN, [])
+    admin = login(client, "lr_admin")
+    publish_doc(svc, client, admin, "Open Guide", "# Open Guide\n\nThe open guide explains the standard process for everyone.", sales)
+    publish_doc(svc, client, admin, "Board Plan", "# Board Plan\n\nThe board plan explains the secret restructuring for directors.", sales,
+                sensitivity="restricted")
+
+    def chunk_of(title):
+        with svc.pool.connection() as c:
+            return c.execute("SELECT ch.id FROM chunks ch JOIN knowledge_versions v ON v.id=ch.version_id JOIN knowledge_items i "
+                             "ON i.id=v.item_id WHERE i.title=%s LIMIT 1", (title,)).fetchone()["id"]
+
+    q_open = _log(svc, users[0], [chunk_of("Open Guide")], answer="OPEN ANSWER")
+    q_secret = _log(svc, users[0], [chunk_of("Board Plan")], answer="SECRET ANSWER")
+    q_gone = _log(svc, users[0], [uuid4()], answer="UNCHECKABLE ANSWER")          # its source no longer exists
+    for q in (q_open, q_secret, q_gone):
+        svc.ops.add_feedback(q, users[0], False, None, None, None)
+
+    full = client.get("/v1/answer-quality", headers=admin).json()                 # System Admin reads every level
+    assert {b["answer"] for b in full["recent_not_helpful"]} == {"OPEN ANSWER", "SECRET ANSWER", "UNCHECKABLE ANSWER"}
+    ka = client.get("/v1/answer-quality", headers=login(client, "lr_ka")).json()
+    assert {b["answer"] for b in ka["recent_not_helpful"]} == {"OPEN ANSWER"}
+    assert "Board Plan" not in {s["title"] for s in ka["weakest_sources"]}

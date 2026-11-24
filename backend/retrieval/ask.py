@@ -272,8 +272,8 @@ class AskService:
         context = AnswerContext(knowledge=order_by_priority(out.candidates, self.settings.priority_tiers),
                                 sales_cases=cases, history=list(history),
                                 asker=asker or {}, preferences=preferences or {})
-        answer = self.generator.generate_answer(context, out.query.original)
-        if NO_APPROVED_ANSWER in answer:              # the passages do not answer it: past chats / careful guidance / exact reply
+        answer = (self.generator.generate_answer(context, out.query.original) or "").strip()
+        if not answer or NO_APPROVED_ANSWER in answer:   # empty reply (bug review 2026-11-24) or the passages do not answer it: past chats / careful guidance / exact reply
             return self._fallback(out, cases, min_sim, history, asker, preferences, base)
         if recheck is not None:
             used = {c.version_id for c in context.knowledge}
@@ -282,8 +282,8 @@ class AskService:
                 return AskResult(answer=NOT_FOUND_TEXT, found=False, actions=NOT_FOUND_ACTIONS, **base)
             if len(allowed) < len(used):              # answer again from what is still allowed only
                 context.knowledge = [c for c in context.knowledge if c.version_id in allowed]
-                answer = self.generator.generate_answer(context, out.query.original)
-                if NO_APPROVED_ANSWER in answer:
+                answer = (self.generator.generate_answer(context, out.query.original) or "").strip()
+                if not answer or NO_APPROVED_ANSWER in answer:
                     return AskResult(answer=NOT_FOUND_TEXT, found=False, actions=NOT_FOUND_ACTIONS, **base)
         hist = ({"similar": len(cases), "successful": sum(c.outcome == SUCCESSFUL_OUTCOME for c in cases)}
                 if cases else None)

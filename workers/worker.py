@@ -17,6 +17,7 @@ from backend.config import get_settings
 
 log = logging.getLogger("worker")
 RECONCILE_SECONDS = 300            # implementation necessity (docs/PRD_GAPS.md §4): how often missed Obsidian pushes are picked up
+ABANDONED_HOURS = 24              # implementation necessity (docs/PRD_GAPS.md): a job with no progress this long is failed at worker start
 
 
 def handle(svc: Services, job_type: str, job: dict) -> None:
@@ -51,9 +52,16 @@ def handle(svc: Services, job_type: str, job: dict) -> None:
     elif job_type == "reindex":
         ids = svc.knowledge.all_version_ids_with_content()
         svc.ops.update_job(job["id"], done=0, total=len(ids))
+        failed = []
         for n, vid in enumerate(ids, 1):
-            svc.ingestion.process_version(vid)
+            try:                                            # one unreadable document must not stop the others being re-indexed
+                svc.ingestion.process_version(vid)
+            except Exception as exc:
+                log.exception("re-index of version %s failed", vid)
+                failed.append(f"{vid}: {str(exc)[:120]}")
             svc.ops.update_job(job["id"], done=n)
+        if failed:
+            raise RuntimeError(f"{len(failed)} of {len(ids)} document versions could not be re-indexed: " + "; ".join(failed[:5]))
     else:
         raise ValueError(f"unknown job type {job_type!r}")
 
@@ -86,6 +94,9 @@ if __name__ == "__main__":
         n = services.queue.requeue_stale()                  # jobs a stopped worker left half-done go back to the queue
         if n:
             log.info("requeued %s unfinished job(s)", n)
+    n = services.ops.fail_abandoned_jobs(ABANDONED_HOURS)       # left "queued"/"running" for a day with nothing behind them
+    if n:
+        log.warning("marked %s abandoned job(s) as failed", n)
     last_reconcile = 0.0
     while True:
         if services.settings.vault_contributors_dir and time.monotonic() - last_reconcile > RECONCILE_SECONDS:

@@ -35,6 +35,14 @@ class OpsStore:
                       "progress_total=COALESCE(%s,progress_total), error=COALESCE(%s,error), updated_at=now() WHERE id=%s",
                       (status, done, total, error, job_id))
 
+    def fail_abandoned_jobs(self, hours: int) -> int:
+        """Jobs still 'queued' or 'running' with no progress for `hours` (their queue message is gone, e.g. the document they
+        pointed at was deleted) are marked failed, so System Health stops showing them as work in progress."""
+        with self.pool.connection() as c:
+            return c.execute("UPDATE jobs SET status='failed', error=COALESCE(error, %s), updated_at=now() WHERE tenant_id=%s "
+                             "AND status IN ('queued','running') AND updated_at < now() - make_interval(hours => %s)",
+                             (f"abandoned: no progress for {hours} hours", self.tenant, hours)).rowcount
+
     # ---- API keys (§40) ----
     def create_api_key(self, name: str, prefix: str, key_hash: str, last4: str, permissions: Sequence[str],
                        department_ids: Sequence[UUID], rate_limit: Optional[int], expires_at, created_by: UUID) -> UUID:
@@ -171,9 +179,17 @@ class OpsStore:
                              "AND query_id = ANY(%s) ORDER BY query_id, created_at DESC", (self.tenant, user_id, list(query_ids))).fetchall()
         return {r["query_id"]: r["helpful"] for r in rows}
 
-    def answer_quality(self, days: int = 30, top_positions: int = 2, since=None) -> dict:
-        """Patterns in the ratings, for administrators. No person is named: the report is about answers and sources, not about staff."""
-        p = {"t": self.tenant, "since": since, "days": days, "top": top_positions}
+    # Security review 2026-11-24 F2 (PRD §8, §10): an answer that used a document above the viewer's access level is left out
+    # of their report (its text and source titles), and so is one whose sources can no longer be checked.
+    _VISIBLE = ("NOT EXISTS (SELECT 1 FROM jsonb_array_elements(q.retrieved) AS e(elem) WHERE NOT EXISTS ("
+                "SELECT 1 FROM chunks ch JOIN knowledge_versions v ON v.id=ch.version_id JOIN knowledge_items i ON i.id=v.item_id "
+                "WHERE ch.id::text = e.elem->>'chunk_id' AND i.sensitivity = ANY(%(lv)s)))")
+
+    def answer_quality(self, days: int = 30, top_positions: int = 2, since=None, levels: Optional[Sequence[str]] = None) -> dict:
+        """Patterns in the ratings, for administrators. No person is named: the report is about answers and sources, not about staff.
+        `levels`: the access levels the viewer may read; None = every level (no filter)."""
+        p = {"t": self.tenant, "since": since, "days": days, "top": top_positions, "lv": list(levels or [])}
+        vis = (" AND " + self._VISIBLE) if levels is not None else ""
         latest = "WITH latest AS (" + self._LATEST.format(extra="AND f.created_at > now() - make_interval(days => %(days)s)") + ") "
         with self.pool.connection() as c:
             tot = c.execute(latest + "SELECT count(*) FILTER (WHERE helpful) AS up, count(*) FILTER (WHERE NOT helpful) AS down FROM latest", p).fetchone()
@@ -183,11 +199,11 @@ class OpsStore:
                                 "FROM latest l JOIN query_log q ON q.id=l.query_id GROUP BY 1 ORDER BY 2+3 DESC", p).fetchall()
             sources = c.execute(latest + "SELECT r.elem->>'title' AS title, r.elem->>'section' AS section, count(*) FILTER (WHERE l.helpful) AS up, "
                                 "count(*) FILTER (WHERE NOT l.helpful) AS down FROM latest l JOIN query_log q ON q.id=l.query_id, "
-                                "LATERAL jsonb_array_elements(q.retrieved) WITH ORDINALITY AS r(elem, pos) WHERE r.pos <= %(top)s "
+                                "LATERAL jsonb_array_elements(q.retrieved) WITH ORDINALITY AS r(elem, pos) WHERE r.pos <= %(top)s" + vis + " "
                                 "GROUP BY 1, 2", p).fetchall()
             bad = c.execute(latest + "SELECT q.id, q.original_query, left(coalesce(q.answer,''), 240) AS answer, q.confidence, q.language, l.created_at, "
                             "(SELECT string_agg(DISTINCT f2.note, '; ') FROM feedback f2 WHERE f2.query_id=q.id AND f2.note IS NOT NULL) AS note "
-                            "FROM latest l JOIN query_log q ON q.id=l.query_id WHERE NOT l.helpful ORDER BY l.created_at DESC LIMIT 20", p).fetchall()
+                            "FROM latest l JOIN query_log q ON q.id=l.query_id WHERE NOT l.helpful" + vis + " ORDER BY l.created_at DESC LIMIT 20", p).fetchall()
         return {"days": days, "up": tot["up"], "down": tot["down"], "by_confidence": by_conf, "by_language": by_lang,
                 "weakest_sources": sorted([s for s in sources if s["down"]], key=lambda s: (-s["down"], s["up"]))[:10],
                 "best_sources": sorted([s for s in sources if s["up"]], key=lambda s: (-s["up"], s["down"]))[:10],

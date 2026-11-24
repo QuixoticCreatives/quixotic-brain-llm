@@ -188,6 +188,8 @@ class GitVault:
         return p.read_text(encoding="utf-8") if p.is_file() else None
 
     def head(self) -> Optional[str]:
+        if not self.root.is_dir():                                   # not created yet (first document not published)
+            return None
         try:
             return self._git("rev-parse", "HEAD")
         except VaultError:

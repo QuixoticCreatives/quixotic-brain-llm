@@ -10,8 +10,8 @@ from uuid import UUID
 def normalize_question(text: str) -> str:
     """De-duplication key. The PRD asks for de-duplication without a rule: exact match after lower-casing, removing accents
     and punctuation and collapsing spaces (docs/PRD_GAPS.md §0.2)."""
-    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode() or text
-    t = re.sub(r"[^\w\s]", " ", t.lower(), flags=re.UNICODE)
+    t = "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))   # accents off, Urdu kept
+    t = re.sub(r"[^\w\s]", " ", unicodedata.normalize("NFKC", t).lower(), flags=re.UNICODE)
     return " ".join(t.split())[:500]
 
 

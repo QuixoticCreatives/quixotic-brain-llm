@@ -104,7 +104,7 @@ export function Ask({ resetKey }: { resetKey: number }) {
     const body = { question: q, department: scope || undefined, conversation_id: convId || undefined };
     let msg: Msg;
     try {
-      if (m2 === 'translate') {      } else if (m2 === 'translate') {                     // not saved to chat history: client messages stay private
+      if (m2 === 'translate') {                     // not saved to chat history: client messages stay private
         const r = await api('/v1/translate', { method: 'POST', body: { text: q, target } });
         msg = { role: 'ai', kind: 'translate', question: q, english: r.english, target: r.target, source: r.source };
       } else if (m2 === 'search') {
@@ -213,7 +213,9 @@ function Composer({ compact, busy, mode, setMode, target, setTarget, web, setWeb
   useEffect(() => {
     if (!pop) return;
     const close = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setPop(null); };
-    document.addEventListener('mousedown', close); return () => document.removeEventListener('mousedown', close);
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setPop(null); };       // keyboard users can close the menu
+    document.addEventListener('mousedown', close); document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc); };
   }, [pop]);
   const send = () => { if ((!text.trim() && !files.length) || busy) return; onSend(text); setText(''); if (ta.current) { ta.current.value = ''; ta.current.style.height = 'auto'; } };
   const slang = app.me.preferences?.discord_slang === true;
@@ -272,7 +274,7 @@ function Composer({ compact, busy, mode, setMode, target, setTarget, web, setWeb
         className={`w-full border-0 outline-none resize-none bg-transparent px-2 py-1.5 text-base leading-normal placeholder:text-muted max-h-[200px] ${compact ? 'min-h-11' : 'min-h-14'}`}
         onPaste={onPaste}
         onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} />
-      <div ref={box} className="relative flex items-center gap-2.5 mt-1.5">
+      <div ref={box} className="relative flex flex-wrap items-center gap-2.5 mt-1.5">
         <button className="circle-btn" aria-label="Answer mode" title="Answer mode" aria-expanded={pop === 'mode'} onClick={() => setPop(pop === 'mode' ? null : 'mode')}><Icon name="plus" size={20} /></button>
         {/* Owner 2026-10-24: Discord Slang Mode as a quick toggle (saved per user, same setting as in Personalization) */}
         <button className={`pill max-sm:px-3 ${slang ? 'on' : ''}`} aria-pressed={slang} disabled={savingSlang}
@@ -290,7 +292,7 @@ function Composer({ compact, busy, mode, setMode, target, setTarget, web, setWeb
           <button className="ml-1 -mr-1 px-1 rounded-full hover:bg-white/60" aria-label="Turn off Web Search" title="Turn off" onClick={() => { setWeb(false); toast('Web Search off: office answers only'); }}>✕</button></span>}
         {mode === 'translate' && <span className="chip orange gap-1">Translate to
           {/* owner 2026-10-24: any language - type it, or pick a suggestion */}
-          <input className="bg-transparent font-semibold outline-none w-40 border-b border-current/30" aria-label="Translate to" list="qb-languages"
+          <input className="bg-transparent font-semibold outline-none w-40 max-sm:w-24 border-b border-current/30" aria-label="Translate to" list="qb-languages"
             value={target} onChange={e => setTarget(e.target.value)} onFocus={e => e.target.select()} placeholder="Any language" />
           <datalist id="qb-languages">{TARGETS.map(t => <option key={t} value={t} />)}</datalist>
           <button className="ml-1 -mr-1 px-1 rounded-full hover:bg-white/60" aria-label="Cancel translation mode" title="Cancel" onClick={() => setMode('general')}>✕</button></span>}

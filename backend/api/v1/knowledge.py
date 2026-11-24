@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from ...analytics import audit
 from ...ingestion.storage import raw_document_key
 from ...ingestion.validation import InvalidUpload, safe_filename, validate_upload
-from ...knowledge.service import Draft, KnowledgeError, KnowledgeService, is_publisher, may_review
+from ...knowledge.service import Draft, KnowledgeError, KnowledgeService, is_publisher
 from ...knowledge.vault import parse_note
 from ...permissions.access import Principal
 from ...permissions.roles import P, can
@@ -256,7 +256,7 @@ def list_proposals(status: Optional[str] = None, p: Principal = Depends(require(
     ks, out = _ks(svc), []
     for x in svc.knowledge.list_proposals(statuses):
         mine = x["submitted_by"] == p.user_id
-        reviewable = may_review(p, ks.proposal_departments(x))
+        reviewable = ks.may_review_proposal(p, x)
         if mine or reviewable:
             out.append({**_proposal_row(x), "mine": mine, "can_review": reviewable})
     return {"proposals": out}
@@ -268,7 +268,7 @@ def get_proposal(proposal_id: UUID, p: Principal = Depends(require(P.ASK)), svc:
     x = svc.knowledge.get_proposal(proposal_id)
     if x is None:
         raise HTTPException(404, "proposal not found")
-    reviewable = may_review(p, ks.proposal_departments(x))
+    reviewable = ks.may_review_proposal(p, x)
     if x["submitted_by"] != p.user_id and not reviewable:
         raise HTTPException(404, "proposal not found")
     decisions = svc.knowledge.decisions(proposal_id)

@@ -47,6 +47,8 @@ export async function api<T = any>(path: string, { method = 'GET', body, form }:
   if (!res.ok) {
     let msg = data && data.detail;
     if (Array.isArray(msg)) msg = msg.map((x: { msg: string }) => x.msg).join('; ');
+    if (!msg && res.status >= 502) msg = 'Quixotic AI is not available right now. Please try again in a minute.';   // proxy page, not JSON
+    else if (!msg && res.status >= 500) msg = 'Something went wrong on our side. Please try again; if it keeps happening, tell your administrator.';
     throw new ApiError(msg || `Something went wrong (${res.status}).`, res.status);
   }
   return data as T;

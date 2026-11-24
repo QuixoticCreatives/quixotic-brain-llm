@@ -255,3 +255,16 @@ def test_audit_log_is_append_only_and_tampering_is_detected(stores):          # 
         c.execute("DELETE FROM audit_logs WHERE actor_label='a3'")
     bad = ops.verify_audit_chain()
     assert not bad["ok"] and {p["problem"] for p in bad["problems"]} >= {"content changed", "previous entry missing"}
+
+
+def test_abandoned_jobs_are_failed_and_fresh_ones_left_alone(stores, db):
+    """Bug review 2026-11-24: jobs left 'running'/'queued' for weeks (their document was deleted) showed forever on System Health."""
+    ops = stores["ops"]
+    old_run, old_queued, fresh, done = (ops.create_job("knowledge.index", {}, None) for _ in range(4))
+    ops.update_job(old_run, status="running"); ops.update_job(done, status="succeeded")
+    with db.connection() as c:
+        c.execute("UPDATE jobs SET updated_at = now() - interval '30 days' WHERE id = ANY(%s)", ([old_run, old_queued, done],))
+    assert ops.fail_abandoned_jobs(24) == 2
+    assert ops.get_job(old_run)["status"] == ops.get_job(old_queued)["status"] == "failed"
+    assert "abandoned" in ops.get_job(old_run)["error"]
+    assert ops.get_job(fresh)["status"] == "queued" and ops.get_job(done)["status"] == "succeeded"

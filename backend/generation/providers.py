@@ -13,6 +13,11 @@ from .prompt import (INTERPRET_PROMPT, SYSTEM_PROMPT, system_prompt_for, TRANSLA
                      build_user_prompt)
 
 
+# Bug review 2026-11-24 (implementation necessity, docs/PRD_GAPS.md): a provider that hangs must not hold a request
+# (and a worker thread) for the SDK default of 10 minutes. Longest answer measured on production: 15.7 s.
+MODEL_TIMEOUT_SECONDS = 90
+MODEL_RETRIES = 1
+
 class _Interprets:
     """Shared `interpret_query` built on each provider's `_complete(system, user, max_tokens)`."""
     _translate_kwargs: dict = {}                     # extra `_complete` arguments for translation (OpenAI reasoning models)
@@ -37,7 +42,7 @@ class _Interprets:
 class GeminiGenerator(_Interprets):
     def __init__(self, model: str) -> None:
         from google import genai
-        self._model, self._client = model, genai.Client()          # reads GEMINI_API_KEY / GOOGLE_API_KEY
+        self._model, self._client = model, genai.Client(http_options={"timeout": MODEL_TIMEOUT_SECONDS * 1000})   # reads GEMINI_API_KEY / GOOGLE_API_KEY
 
     def _complete(self, system: str, user: str, max_tokens: int) -> str:
         from google.genai import types
@@ -80,7 +85,7 @@ def _verbosity(context: AnswerContext, question: str) -> str:
 class OpenAIGenerator(_Interprets):
     def __init__(self, model: str, reasoning_effort: str | None = None) -> None:
         from openai import OpenAI
-        self._model, self._client = model, OpenAI()                 # reads OPENAI_API_KEY
+        self._model, self._client = model, OpenAI(timeout=MODEL_TIMEOUT_SECONDS, max_retries=MODEL_RETRIES)   # reads OPENAI_API_KEY
         self._effort = reasoning_effort
         # Translation needs the style rules followed (measured 2026-10-20: "minimal" kept "bhai" -> "brother" and invented "Sir").
         self._translate_kwargs = {"effort": "low"} if _reasoning_model(model) else {}
@@ -142,7 +147,7 @@ class DeepSeekGenerator(OpenAIGenerator):
         key = os.environ.get("DEEPSEEK_API_KEY")
         if not key:
             raise ValueError("DEEPSEEK_API_KEY is not set")
-        self._model, self._client = model, OpenAI(api_key=key, base_url=self.BASE_URL)
+        self._model, self._client = model, OpenAI(api_key=key, base_url=self.BASE_URL, timeout=MODEL_TIMEOUT_SECONDS, max_retries=MODEL_RETRIES)
 
     def _complete(self, system: str, user: str, max_tokens: int) -> str:
         r = self._client.chat.completions.create(                  # DeepSeek takes `max_tokens`, not `max_completion_tokens`
@@ -154,7 +159,7 @@ class DeepSeekGenerator(OpenAIGenerator):
 class ClaudeGenerator(_Interprets):
     def __init__(self, model: str, max_tokens: int) -> None:
         import anthropic
-        self._model, self._max, self._client = model, max_tokens, anthropic.Anthropic()   # reads ANTHROPIC_API_KEY
+        self._model, self._max, self._client = model, max_tokens, anthropic.Anthropic(timeout=MODEL_TIMEOUT_SECONDS, max_retries=MODEL_RETRIES)   # reads ANTHROPIC_API_KEY
 
     def _complete(self, system: str, user: str, max_tokens: int) -> str:
         r = self._client.messages.create(model=self._model, max_tokens=max_tokens, system=system,

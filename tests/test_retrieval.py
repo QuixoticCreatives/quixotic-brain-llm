@@ -1,3 +1,4 @@
+import pytest
 from uuid import uuid4
 
 from backend.generation.prompt import SYSTEM_PROMPT, build_user_prompt
@@ -138,6 +139,17 @@ def test_model_saying_no_approved_answer_gives_the_exact_prd_text():          # 
     r = AskService(search, Unsure(), search.settings).ask("can we give a 20% discount?", DEPT, levels=LV)
     assert r.answer == "I couldn't find an approved answer in the company knowledge base." and not r.found
     assert "NO_APPROVED_ANSWER" not in r.answer and r.sources == []
+
+
+@pytest.mark.parametrize("reply", ["", "   \t "])
+def test_an_empty_model_reply_is_never_shown_as_a_found_answer(reply):   # bug review 2026-11-24; PRD §6 FR-CHAT-04
+    class Blank(FakeGenerator):
+        def generate_answer(self, context, question):
+            self.calls.append(1); return reply
+    from backend.retrieval.ask import AskService
+    _, search, _ = build(FakeStore(vec=[cand(score=.95)]))
+    r = AskService(search, Blank(), search.settings).ask("what is the refund window?", DEPT, levels=LV)
+    assert r.answer == "I couldn't find an approved answer in the company knowledge base." and not r.found
 
 
 def test_permissions_are_rechecked_before_the_answer_is_returned():           # PRD §8

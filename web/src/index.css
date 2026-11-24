@@ -11,7 +11,7 @@
   --color-orange-100: #ffe6d5;
   --color-ink: #14141f;
   --color-ink-2: #4b5262;
-  --color-muted: #8a90a0;
+  --color-muted: #646b7d;                 /* QA 2026-11-24: was #8a90a0 (3.2:1 on white); now passes WCAG AA 4.5:1 */
   --color-line: #eceef2;
   --color-line-2: #e2e5ea;
   --color-canvas: #fffaf6;
@@ -165,13 +165,14 @@
   .chat-item.on { background: var(--color-orange-100); color: var(--color-ink); font-weight: 600; }
   .chat-item .dots { opacity: 0; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; }
   .chat-item:hover .dots, .chat-item.on .dots, .chat-item .dots:focus-visible { opacity: 1; }
+  @media (hover: none) { .chat-item .dots { opacity: 1; } }    /* touch screens have no hover: keep the chat menu reachable */
   .scroll-thin { scrollbar-width: thin; scrollbar-color: #b9b9b9 transparent; }
 }
 
 /* ---------- conversation ---------- */
 @layer components {
   .msg-u { align-self: flex-end; background: #f3efe9; border-radius: 22px; padding: 11px 18px; max-width: 78%; white-space: pre-wrap; }
-  .answer { white-space: pre-wrap; font-size: 16px; line-height: 1.7; }
+  .answer { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 1.7; }   /* long links stay on screen */
   .notice { border-radius: 14px; padding: 14px 16px; background: var(--color-warn-50); }
   .notice b { color: var(--color-warn); }
   .src { display: inline-flex; align-items: center; gap: 8px; background: var(--color-info-50); color: var(--color-info); border-radius: 12px; padding: 7px 12px; font-size: 13px; font-weight: 600; text-align: left; }

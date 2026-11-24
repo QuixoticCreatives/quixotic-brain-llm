@@ -30,7 +30,8 @@ export function AuthPages({ onSignedIn, initialMessage }: { onSignedIn: () => vo
   const [email, setEmail] = useState('');
   const verify = linkToken('verify'), reset = linkToken('reset');
   if (verify) return <VerifyEmail token={verify} done={m => { clearLink(); setMsg(m); setScreen('login'); }} />;
-  if (reset) return <ResetPassword token={reset} done={m => { clearLink(); setMsg(m); setScreen('login'); }} />;
+  if (reset) return <ResetPassword token={reset} done={m => { clearLink(); setMsg(m); setScreen('login'); }}
+    toForgot={() => { clearLink(); setMsg(undefined); setScreen('forgot'); }} />;
   if (screen === 'signup') return <Signup toLogin={() => { setMsg(undefined); setScreen('login'); }} done={e => { setEmail(e); setScreen('checkEmail'); }} />;
   if (screen === 'checkEmail') return <Status icon="mail" title="Check your email" back={() => setScreen('login')}>
     {/* PRD §5 FR-AUTH-02/03: verify the email; the account stays Pending until an administrator approves it */}
@@ -47,9 +48,10 @@ export function AuthPages({ onSignedIn, initialMessage }: { onSignedIn: () => vo
 function Login({ message, toSignup, toForgot, onSignedIn }: { message?: string; toSignup: () => void; toForgot: () => void; onSignedIn: () => void }) {
   const [id, setId] = useState(''); const [pw, setPw] = useState(''); const a = useAction();
   const [info, setInfo] = useState<string | null>(null); const [unverified, setUnverified] = useState(false);
+  const [busy, setBusy] = useState(false);
   useEffect(() => { if (message) setInfo(message); }, [message]);
   const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); a.setError(null); setInfo(null); setUnverified(false);
+    e.preventDefault(); if (busy) return; a.setError(null); setInfo(null); setUnverified(false); setBusy(true);
     try {
       await api('/v1/auth/login', { method: 'POST', body: { identifier: id.trim(), password: pw } });
       onSignedIn();
@@ -57,7 +59,7 @@ function Login({ message, toSignup, toForgot, onSignedIn }: { message?: string; 
       const e2 = err as ApiError;
       if (e2.status === 403 && /verify your email/i.test(e2.message)) setUnverified(true);
       a.setError(e2.status === 401 ? 'Those details don’t match. Please try again.' : e2.message);
-    }
+    } finally { setBusy(false); }
   };
   const resend = () => api('/v1/auth/verify-email/resend', { method: 'POST', body: { identifier: id.trim() } })
     .then(() => { a.setError(null); setUnverified(false); setInfo('If your email is not verified yet, a new link is on its way.'); }).catch(e => a.setError(e.message));
@@ -69,7 +71,7 @@ function Login({ message, toSignup, toForgot, onSignedIn }: { message?: string; 
         {a.error && <Banner kind="err">{a.error}{unverified && <> <button type="button" className="underline font-semibold" onClick={resend}>Send the link again</button></>}</Banner>}
         <div className="field"><label htmlFor="lid">Email or username</label><input id="lid" className="input" autoComplete="username" required autoFocus value={id} onChange={e => setId(e.target.value)} /></div>
         <div className="field"><label htmlFor="lpw">Password</label><input id="lpw" className="input" type="password" autoComplete="current-password" required value={pw} onChange={e => setPw(e.target.value)} /></div>
-        <button className="btn primary w-full !h-[46px] mt-1.5">Sign in</button>
+        <button className="btn primary w-full !h-[46px] mt-1.5" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
       </form>
       <p className="text-center mt-4"><button className="text-muted hover:text-orange text-sm min-h-11 px-2" onClick={toForgot}>Forgot your password?</button></p>
       <p className="text-center text-muted mt-1">New here? <button className="text-orange font-bold min-h-11 px-1" onClick={toSignup}>Create an account</button></p>
@@ -80,7 +82,10 @@ function Login({ message, toSignup, toForgot, onSignedIn }: { message?: string; 
 function Signup({ toLogin, done }: { toLogin: () => void; done: (email: string) => void }) {
   const [depts, setDepts] = useState<{ id: string; name: string }[]>([]);
   const [f, setF] = useState({ n: '', u: '', m: '', p: '', r: '', d: '', ph: '' }); const a = useAction();
-  useEffect(() => { api('/v1/auth/signup-options').then(r => setDepts(r.departments)).catch(() => {}); }, []);
+  useEffect(() => {
+    api('/v1/auth/signup-options').then(r => setDepts(r.departments))
+      .catch(() => a.setError('We could not load the list of departments. Please refresh the page to try again.'));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -101,7 +106,7 @@ function Signup({ toLogin, done }: { toLogin: () => void; done: (email: string) 
           <div className="field"><label htmlFor="su-m">Work email</label><input id="su-m" className="input" type="email" required autoComplete="email" value={f.m} onChange={set('m')} /></div>
         </div>
         <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
-          <div className="field"><label htmlFor="su-p">Password</label><input id="su-p" className="input" type="password" required minLength={8} autoComplete="new-password" value={f.p} onChange={set('p')} /></div>
+          <div className="field"><label htmlFor="su-p">Password</label><input id="su-p" className="input" type="password" required minLength={8} autoComplete="new-password" value={f.p} onChange={set('p')} /><span className="hint">At least 8 characters.</span></div>
           <div className="field"><label htmlFor="su-r">Confirm password</label><input id="su-r" className="input" type="password" required minLength={8} autoComplete="new-password" value={f.r} onChange={set('r')} /></div>
         </div>
         <div className="field"><label htmlFor="su-d">Department you work in</label>
@@ -142,7 +147,7 @@ function Forgot({ back, done }: { back: () => void; done: () => void }) {
   );
 }
 
-function ResetPassword({ token, done }: { token: string; done: (message: string) => void }) {
+function ResetPassword({ token, done, toForgot }: { token: string; done: (message: string) => void; toForgot: () => void }) {
   const [p, setP] = useState(''); const [r, setR] = useState(''); const a = useAction();
   return (
     <Shell>
@@ -154,10 +159,13 @@ function ResetPassword({ token, done }: { token: string; done: (message: string)
           .then(ok => ok && done('Your password was changed. Sign in with the new one.'));
       }}>
         {a.error && <Banner kind="err">{a.error}</Banner>}
-        <div className="field"><label htmlFor="rp-p">New password</label><input id="rp-p" className="input" type="password" required minLength={8} autoComplete="new-password" autoFocus value={p} onChange={e => setP(e.target.value)} /></div>
+        <div className="field"><label htmlFor="rp-p">New password</label><input id="rp-p" className="input" type="password" required minLength={8} autoComplete="new-password" autoFocus value={p} onChange={e => setP(e.target.value)} /><span className="hint">At least 8 characters.</span></div>
         <div className="field"><label htmlFor="rp-r">Confirm new password</label><input id="rp-r" className="input" type="password" required minLength={8} autoComplete="new-password" value={r} onChange={e => setR(e.target.value)} /></div>
         <button className="btn primary w-full !h-[46px]" disabled={a.busy}>Save password</button>
       </form>
+      {/* QA 2026-11-24: an expired or used link was a dead end */}
+      <p className="text-center mt-4"><button className="text-muted hover:text-orange text-sm min-h-11 px-2" onClick={toForgot}>Link not working? Send a new link</button></p>
+      <p className="text-center"><button className="text-orange font-bold min-h-11 px-1" onClick={() => done('')}>Back to sign in</button></p>
     </Shell>
   );
 }
@@ -189,7 +197,7 @@ export function MfaScreen({ mode, email, done, cancel }: { mode: 'setup' | 'veri
           <input id="mfa-c" className="input text-center tracking-[.3em] text-lg" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]{6,7}" maxLength={7} required autoFocus value={code} onChange={e => setCode(e.target.value)} /></div>
         <button className="btn primary w-full !h-[46px]" disabled={a.busy}>{mode === 'setup' ? 'Turn on and continue' : 'Continue'}</button>
       </form>
-      <p className="text-center mt-4"><button className="text-muted hover:text-orange text-sm min-h-11 px-2" onClick={cancel}>Sign out</button></p>
+      <p className="text-center mt-4"><button className="text-muted hover:text-orange text-sm min-h-11 px-2" onClick={cancel}>Log out</button></p>
     </Shell>
   );
 }

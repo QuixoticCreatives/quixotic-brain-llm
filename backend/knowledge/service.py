@@ -217,6 +217,7 @@ class KnowledgeService:
             raise KnowledgeError(409, "this proposal can no longer be withdrawn")
         if p["kind"] in ("create", "update"):
             self.store.set_status(p["version_id"], DRAFT, actor.user_id, "proposal withdrawn")
+        self._reopen_gap(p.get("gap_id"))
         audit.record(self.svc.ops, audit.KNOWLEDGE_SUBMISSION, actor.user_id, actor.employee_id, proposal=proposal_id, action="withdrawn")
 
     def after_indexing(self, version_id: UUID) -> None:
@@ -234,20 +235,27 @@ class KnowledgeService:
         item = self.store.get_item(p["item_id"])
         return list({UUID(str(x)) for x in meta_depts} | set(item["department_ids"] if item else []))
 
+    def may_review_proposal(self, actor: Principal, p: dict) -> bool:
+        """Department rule (§3, §7) plus the access level of both the current document and the proposed one (§8, §10)."""
+        if not may_review(actor, self.proposal_departments(p)):
+            return False
+        item = self.store.get_item(p["item_id"])
+        levels = [(item or {}).get("sensitivity"), (p.get("meta") or {}).get("sensitivity")]
+        return all(self._level_ok(actor, lvl) for lvl in levels)
+
     def decide(self, actor: Principal, proposal_id: UUID, decision: str, note: Optional[str], via: str = "web") -> dict:
         p = self.store.get_proposal(proposal_id)
         if p is None:
             raise KnowledgeError(404, "proposal not found")
-        depts = self.proposal_departments(p)
-        if not may_review(actor, depts):
-            raise KnowledgeError(403, "you cannot review changes for these departments")
+        if not self.may_review_proposal(actor, p):
+            raise KnowledgeError(403, "you cannot review changes for these departments or this access level")
         if p["status"] != "open":
             raise KnowledgeError(409, f"this proposal is {p['status'].replace('_', ' ')}")
         if decision != "approve" and not (note or "").strip():
             raise KnowledgeError(422, "say what should change (a short note for the person who proposed it)")
         if decision == "approve" and p["kind"] in ("create", "update") and p["version_status"] != UNDER_REVIEW:
             raise KnowledgeError(409, "this version is not waiting for review")
-        if decision == "approve" and p["kind"] in ("create", "update") and p["indexed_checksum"] != p["checksum"]:
+        if decision == "approve" and p["kind"] in ("create", "update") and (p["indexed_checksum"] is None or p["indexed_checksum"] != p["checksum"]):
             raise KnowledgeError(409, "the document is still being read and indexed; try again in a moment")
         if not self.store.add_decision(proposal_id, actor.user_id, decision, (note or "").strip() or None, via):
             raise KnowledgeError(409, "you already recorded this decision")
@@ -258,6 +266,8 @@ class KnowledgeService:
             self.store.set_proposal_status(proposal_id, status, expect=("open",))
             if p["kind"] in ("create", "update"):
                 self.store.set_status(p["version_id"], DRAFT, actor.user_id, f"{status.replace('_', ' ')}: {note}")
+            if decision == "reject":
+                self._reopen_gap(p.get("gap_id"))
             self._notify_submitter(p, f"{'Rejected' if decision == 'reject' else 'Changes requested'}: {p['title']}",
                                    f"{note}\n\nReviewer: {self._name(actor.user_id)}")
             return {"status": status}
@@ -367,6 +377,14 @@ class KnowledgeService:
             if g and g["status"] == "open":
                 gaps.update(gap_id, status="in_progress")
 
+    def _reopen_gap(self, gap_id: Optional[UUID]) -> None:
+        """Bug review 2026-11-24: the answer to a missing-info report was withdrawn or rejected, so the report is open again (§9)."""
+        gaps = getattr(self.svc, "gaps", None)
+        if gap_id and gaps:
+            g = gaps.get(gap_id)
+            if g and g["status"] == "in_progress":
+                gaps.update(gap_id, status="open")
+
     def _after_publish(self, p: dict, item: dict) -> None:
         """§9: "Once approved new knowledge is published, mark the gap resolved"; then the bots' confirmation hook."""
         gaps = getattr(self.svc, "gaps", None)
@@ -383,12 +401,15 @@ class KnowledgeService:
                 log.exception("after-publish hook failed")
 
     # ---- reading ----
+    def _level_ok(self, actor: Principal, level: Optional[str]) -> bool:
+        """§8/§10: the access level counts as much as the department, for every role; an unknown level is denied."""
+        return not level or actor.role.value in self.svc.settings.sensitivity_levels.get(level, frozenset())
+
     def _may_see(self, actor: Principal, item: dict) -> bool:
+        if not self._level_ok(actor, item.get("sensitivity")):
+            return False
         if actor.all_departments:
             return True
-        level = item.get("sensitivity")                       # §8: the access level counts as much as the department
-        if level and actor.role.value not in self.svc.settings.sensitivity_levels.get(level, frozenset()):
-            return False
         return bool(set(item["department_ids"]) & set(actor.department_ids) | set(item["department_ids"]) & set(actor.managed_department_ids))
 
     def diff(self, p: dict) -> dict:

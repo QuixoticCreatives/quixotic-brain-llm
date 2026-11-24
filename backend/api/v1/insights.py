@@ -14,6 +14,13 @@ from ..services import Services
 router = APIRouter(prefix="/v1", tags=["insights"])
 
 
+def readable_levels(actor: Principal, settings) -> Optional[list]:
+    """The access levels this role may read, or None when it may read every level (then nothing needs filtering)."""
+    levels = settings.sensitivity_levels
+    mine = [lvl for lvl, roles in levels.items() if actor.role.value in roles]
+    return None if len(mine) == len(levels) else mine
+
+
 @router.get("/health")
 def health(svc: Services = Depends(get_services)):
     """PRD §37 GET /v1/health."""
@@ -50,9 +57,10 @@ def knowledge_health(_: Principal = Depends(require(P.VIEW_INSIGHTS)), svc: Serv
 
 
 @router.get("/answer-quality")
-def answer_quality(days: int = 30, _: Principal = Depends(require(P.VIEW_INSIGHTS)), svc: Services = Depends(get_services)):
-    """Patterns in 👍/👎 for administrators: which sources and question types are rated badly, and how well 'high confidence' matches reality."""
-    q = svc.ops.answer_quality(max(1, min(days, 365)), since=svc.ops.learning_since())
+def answer_quality(days: int = 30, actor: Principal = Depends(require(P.VIEW_INSIGHTS)), svc: Services = Depends(get_services)):
+    """Patterns in 👍/👎 for administrators: which sources and question types are rated badly, and how well 'high confidence' matches reality.
+    Only answers built from documents at levels the viewer may read are shown (security review 2026-11-24 F2; PRD §8, §10)."""
+    q = svc.ops.answer_quality(max(1, min(days, 365)), since=svc.ops.learning_since(), levels=readable_levels(actor, svc.settings))
     q["learning_enabled"] = bool(svc.settings.feedback_learning)
     return q
 
